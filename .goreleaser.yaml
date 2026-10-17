@@ -1,0 +1,55 @@
+version: 2
+project_name: rexurrect
+
+builds:
+  - id: rexurrect
+    main: ./cmd/rexurrect
+    binary: rexurrect
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - arm64
+      - amd64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+universal_binaries:
+  - id: rexurrect
+    replace: false
+
+archives:
+  - id: rexurrect
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+homebrew_casks:
+  - name: rexurrect
+    ids:
+      - rexurrect
+    binaries:
+      - rexurrect
+    repository:
+      owner: blacktop
+      name: homebrew-tap
+      branch: master
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    skip_upload: auto
+    homepage: https://github.com/blacktop/rexurrect
+    description: Save and restore Rex terminal sessions
+    license: MIT
+    custom_block: |
+      depends_on :macos
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/rexurrect"]
+        end
+      end
+    caveats: |
+      To build and install the per-user LaunchAgent, run `just install`
+      from a checkout of https://github.com/blacktop/rexurrect.

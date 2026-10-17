@@ -1,0 +1,51 @@
+{
+  "session_id": "session:01a14193-6141-71d8-966a-317b69a0b804",
+  "block_id": "block:01a14193-6141-73d4-b744-b66bf984367c",
+  "block": {
+    "block_id": "block:01a14193-6141-73d4-b744-b66bf984367c",
+    "label": "shell",
+    "creator_name": "com.superlogical.terminal",
+    "flavor": "com.superlogical.terminal.shell",
+    "host_id": "7cf079c2-e2c1-4838-9fbd-0c04ace845b5",
+    "placement": "placed",
+    "window_id": "window:01a14193-6156-7ec1-8be6-3e435746a453",
+    "owner": "client:01a14232-7774-7e82-bcb8-8c51d66fac34"
+  },
+  "process": {
+    "last_exit": null,
+    "child": {
+      "pid": 51132,
+      "user_id": 0,
+      "user": "root",
+      "name": "login",
+      "path": "/usr/bin/login"
+    },
+    "foreground": {
+      "pid": 51138,
+      "user_id": 501,
+      "user": "blacktop",
+      "name": "fish",
+      "path": "/opt/homebrew/Cellar/fish/4.9.3/bin/fish",
+      "invoked_path": "/opt/homebrew/bin/fish",
+      "argv0": "-fish",
+      "cwd": "/Users/blacktop/Developer/Mine/blacktop/github"
+    },
+    "ancestors": [
+      {
+        "pid": 51132,
+        "user_id": 0,
+        "user": "root",
+        "name": "login",
+        "path": "/usr/bin/login"
+      }
+    ],
+    "home": "/Users/blacktop"
+  },
+  "pwd": {
+    "pwd": "file://mbp-m5.tail50745.ts.net/Users/blacktop/Developer/Mine/blacktop/github",
+    "owner": {
+      "pid": 51138,
+      "name": "fish"
+    }
+  }
+}
