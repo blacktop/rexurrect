@@ -76,11 +76,15 @@ status, log, receipt, and LaunchAgent maintenance recipes. The recipes accept
 the `REXURRECT_SERVER`, `REXURRECT_STATE_DIR`, `REXURRECT_REX`, and
 `REXURRECT_BIN_DIR` environment overrides. Install the released binary with
 `brew install --cask blacktop/tap/rexurrect`, or use `just install` to build
-and install the per-user LaunchAgent. `just release-check` runs `goreleaser check`.
+and install the per-user LaunchAgent. `just check` runs the formatting, vet, and
+private-server checks. `just release-check` runs `goreleaser check`.
 The release workflow pins GoReleaser v2.18.2 and publishes to
 `blacktop/homebrew-tap` on branch `master`, under `Casks`, using the
-`HOMEBREW_TAP_TOKEN` secret from the `release` GitHub environment. No recipe
-creates tags or pushes.
+`HOMEBREW_TAP_TOKEN` secret from the `release` GitHub environment.
+`just release vMAJOR.MINOR.PATCH` requires a clean `main` checkout matching
+`origin/main`, runs both checks with the native test gates enabled, creates a
+signed tag at the checked commit, and pushes only that tag. If the push fails,
+the signed local tag remains available for an explicit retry.
 
 ### Migration from rex-resurrect
 
@@ -930,7 +934,7 @@ byte-for-byte state/journal preservation on uninstall. It always cleans up its
 own job and checks that uninstall does not leave its label disabled. This is a
 live launchd gate, and bootstrap errors fail the test. An agent sandbox may
 deny launchd submission even when the plist is valid. Inside such a sandbox,
-run `env REXURRECT_SKIP_LAUNCHD=1 make check`; this explicitly skips only
+run `env REXURRECT_SKIP_LAUNCHD=1 just check`; this explicitly skips only
 the launchd lifecycle test. The real gate must still run outside an agent
 sandbox, without that variable:
 `go test ./internal/... -run TestLaunchAgentLifecycle -v`. A skipped or rejected
@@ -943,13 +947,13 @@ reconstruction tests (which now restore default terminals), and the
 compiled-binary test's default-terminal fixture. All other tests still run.
 The default-terminal test otherwise fails on a terminal exit; it does not
 replace the default terminal with an explicit shell. A sandbox suite can use
-`env REXURRECT_SKIP_LOGIN_SHELL=1 REXURRECT_SKIP_LAUNCHD=1 make check`.
+`env REXURRECT_SKIP_LOGIN_SHELL=1 REXURRECT_SKIP_LAUNCHD=1 just check`.
 Run the full real suite outside the sandbox without either variable. The two
 focused default-terminal gates are:
 `go test ./internal/rex -run TestDefaultTerminalRoundTrip -count=1 -v` and
 `go test ./cmd/... -run TestAutoBinaryPrivateServer -count=1 -v`.
 
-`make check` runs its full package suite with `go test -p 1 ./...` so the
+`just check` runs its full package suite with `go test -p 1 ./...` so the
 packages do not compete with each other's private servers. The named integration
 steps remain available. `TestSlowRexCalls` uses a stand-in executable to verify
 six-second read responses, bounded retries, per-attempt cancellation, and the

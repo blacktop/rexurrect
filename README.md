@@ -191,16 +191,20 @@ version is in the
 
 ## Development
 
-`make check` needs Go 1.27 and Rex installed. The integration tests start
+`just check` needs Go 1.27 and Rex installed. The integration tests start
 private Rex servers of their own, never your live one, and cover
 reconstruction, save and status, restore recovery, automatic cycles, agent
 resume, and a PID-suffixed test LaunchAgent. The launchd and login-shell tests
 need a real user session. Inside an agent sandbox, run
-`env REXURRECT_SKIP_LAUNCHD=1 REXURRECT_SKIP_LOGIN_SHELL=1 make check`, and run
+`env REXURRECT_SKIP_LAUNCHD=1 REXURRECT_SKIP_LOGIN_SHELL=1 just check`, and run
 the full suite from a normal macOS terminal before merging.
 
-Releases go through GoReleaser v2.18.2 in the GitHub workflow, which publishes
-the Homebrew cask to `blacktop/homebrew-tap` with the `HOMEBREW_TAP_TOKEN`
-secret. `just release-check` validates the config locally.
+To publish from a clean, pushed `main`, run `just release v0.1.0` in your own
+terminal, substituting the version you want. It runs the full checks without
+the sandbox skips, validates GoReleaser's config, creates a signed tag, and
+pushes that tag. The GitHub workflow uses GoReleaser v2.18.2 to publish the
+release and update `blacktop/homebrew-tap`. It needs `HOMEBREW_TAP_TOKEN` in the
+repository's `release` environment. `just release-check` validates the config
+without tagging or publishing.
 [compatibility.md](docs/compatibility.md) records the tested Rex version and
 every boundary in detail.
