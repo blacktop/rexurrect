@@ -12,22 +12,23 @@ the binary, edit account configuration, or start or restart Rex.
 
 ## Install the plugin
 
-Use a local checkout until the package is published. The repository's
-`.claude-plugin/marketplace.json` is a shared catalog that both current clients
-can load; Codex supports this Claude-compatible marketplace format. Run these
-commands from your own terminal, replacing the checkout path:
+The repository's `.claude-plugin/marketplace.json` is a shared catalog that
+Codex and Claude Code can load. Add it from GitHub in your own terminal:
 
 ```fish
-codex plugin marketplace add /absolute/path/to/rexurrect
+codex plugin marketplace add blacktop/rexurrect
 codex plugin add rexurrect@rexurrect
 ```
 
 For Claude Code, choose the installation scope you want:
 
 ```fish
-claude plugin marketplace add /absolute/path/to/rexurrect
+claude plugin marketplace add blacktop/rexurrect
 claude plugin install rexurrect@rexurrect --scope user
 ```
+
+For local development, replace `blacktop/rexurrect` in the marketplace command
+with the absolute path to your checkout.
 
 Use each account's existing command to install and enable the plugin in that
 account's configuration. Keep its current authentication and routing intact.
