@@ -148,5 +148,5 @@ func (c Client) waitAvailable(ctx context.Context, wait time.Duration) (serverId
 		case <-timer.C:
 		}
 	}
-	return serverIdentity{}, fmt.Errorf("Rex unavailable: %w", errors.Join(ctx.Err(), last))
+	return serverIdentity{}, fmt.Errorf("no reachable Rex server: %w", errors.Join(ctx.Err(), last))
 }

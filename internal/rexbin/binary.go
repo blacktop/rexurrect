@@ -22,7 +22,7 @@ type Substitution struct {
 // helpers in lexical order, then rex on PATH. Returned paths are absolute.
 func Resolve(configured string) (string, *Substitution, error) {
 	if configured == "" {
-		return "", nil, errors.New("Rex executable path must be nonempty")
+		return "", nil, errors.New("configured Rex executable path must be nonempty")
 	}
 	lookup := func(name string) (string, error) {
 		path, err := exec.LookPath(name)

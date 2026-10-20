@@ -33,7 +33,7 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	flags.StringVar(&r.SessionID, "session", "", "full Rex session ID (optional filter for list)")
 	flags.StringVar(&r.BlockID, "block", "", "full Rex block ID (optional filter for list)")
 	if action == "set" || action == "clear" {
-		flags.DurationVar(&lockTimeout, "lock-timeout", rex.DefaultLockTimeout, "state lock wait, at most 60s")
+		flags.DurationVar(&lockTimeout, "lock-timeout", lockTimeout, "state lock wait, at most 60s")
 	}
 	if action == "set" {
 		flags.StringVar(&r.Conversation, "conversation", "", "conversation UUID")
@@ -43,7 +43,8 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 	if action == "clear" {
 		flags.StringVar(&guard.Conversation, "conversation", "", "optional conversation UUID guard")
-		flags.StringVar(&guard.Harness, "harness", "", "optional harness guard; with --conversation both must match")
+		flags.StringVar(&guard.Harness, "harness", "",
+			"optional harness guard; with --conversation both must match")
 	}
 	if action == "list" {
 		flags.BoolVar(&jsonOutput, "json", false, "print a JSON array")
@@ -71,7 +72,9 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
-	c := rex.Client{Binary: resolved, Socket: socket, CallTimeout: *callTimeout, LockTimeout: lockTimeout}
+	c := rex.Client{
+		Binary: resolved, Socket: socket, CallTimeout: *callTimeout, LockTimeout: lockTimeout,
+	}
 	switch action {
 	case "set":
 		return c.SetReceipt(ctx, *dir, r)

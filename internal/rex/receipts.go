@@ -89,7 +89,9 @@ func (c Client) SetReceipt(ctx context.Context, dir string, r receipt.Receipt) e
 }
 
 // ClearReceipt removes the receipt under key when every supplied guard matches.
-func (c Client) ClearReceipt(ctx context.Context, dir string, key receipt.Key, guard receipt.ClearGuard) error {
+func (c Client) ClearReceipt(
+	ctx context.Context, dir string, key receipt.Key, guard receipt.ClearGuard,
+) error {
 	if err := key.Validate(); err != nil {
 		return err
 	}

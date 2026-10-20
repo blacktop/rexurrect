@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,12 +93,12 @@ func (a *Agent) loaded(ctx context.Context) (bool, error) {
 	return false, err
 }
 
-func (a *Agent) readOwned() ([]byte, error) {
+func (a *Agent) readOwned() (owned []byte, err error) {
 	f, err := os.OpenFile(a.PlistPath, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { err = errors.Join(err, f.Close()) }()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -213,7 +214,7 @@ func (a *Agent) Install(ctx context.Context, c Config) (Status, error) {
 	return s, err
 }
 
-func (a *Agent) writePlist(data []byte) error {
+func (a *Agent) writePlist(data []byte) (err error) {
 	dir := filepath.Dir(a.PlistPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -222,7 +223,11 @@ func (a *Agent) writePlist(data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
+	defer func() {
+		if removeErr := os.Remove(f.Name()); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			err = errors.Join(err, removeErr)
+		}
+	}()
 	_, writeErr := f.Write(data)
 	if err := errors.Join(writeErr, f.Sync(), f.Close()); err != nil {
 		return err

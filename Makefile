@@ -1,7 +1,7 @@
 .PHONY: check
 
 check:
-	test -z "$$(gofmt -l .)"
+	test -z "$$(gofmt -l cmd internal)"
 	go vet ./...
 	go test -p 1 ./...
 	go test ./internal/... -run TestIsolatedRoundTrip -v

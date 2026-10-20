@@ -347,9 +347,10 @@ func TestAutoCyclePrivateServerRecovery(t *testing.T) {
 			}
 			var firstSteps, secondSteps []string
 			for _, record := range j.Records[len(before.Records):] {
-				if record.SourceID == first.ID {
+				switch record.SourceID {
+				case first.ID:
 					firstSteps = append(firstSteps, record.Outcome)
-				} else if record.SourceID == second.ID {
+				case second.ID:
 					secondSteps = append(secondSteps, record.Outcome)
 				}
 			}

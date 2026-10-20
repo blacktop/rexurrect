@@ -1,8 +1,12 @@
-# rexurrect
+<p align="center">
+  <a href="https://github.com/blacktop/rexurrect"><img alt="Rexurrect Logo" src="docs/rexurrect_logo_readme.webp" width="200" height="200" /></a>
+</p>
+<h1 align="center">rexurrect</h1>
+<p align="center">Restart Rex sessions after a reboot</p>
 
 Rex restarts, or the Mac reboots, and your sessions come back: the same tabs
-and splits, each terminal in the directory it was in, and the Claude Code or
-Codex conversation you were running resumed in its block.
+and splits, each terminal in the directory it was in, and explicitly registered
+Claude Code or Codex conversations resumed in their blocks.
 
 rexurrect is a small Go tool for macOS. Saving only reads from Rex. Restoring
 creates sessions, so that path keeps a write-ahead journal and refuses to
@@ -77,10 +81,14 @@ rexurrect agent install --server "unix://$HOME/Library/Application Support/rex/s
 
 ## Resume hooks
 
-rexurrect does not edit your dotfiles. The receipt is written by a hook you
-install yourself: a SessionStart and SessionEnd hook for Claude Code, or a fish
-wrapper around `codex resume`. Working examples of both are in the
-[hook and wrapper examples](docs/compatibility.md#hook-and-wrapper-examples).
+The [portable agent plugin](plugins/rexurrect/README.md) bundles Codex and Claude
+Code lifecycle hooks, setup/status skills, and reusable Fish helpers. Install it
+in the account you use, review its hooks, and follow its receipt verification
+steps. rexurrect does not edit your dotfiles or account configuration.
+
+The [manual hook and wrapper examples](docs/compatibility.md#hook-and-wrapper-examples)
+remain available when you prefer to manage the integration yourself. Use one
+rexurrect hook installation per account so the same event is not handled twice.
 
 ## Manual use
 

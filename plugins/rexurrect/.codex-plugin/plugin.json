@@ -1,0 +1,16 @@
+{
+  "name": "rexurrect",
+  "version": "0.1.0",
+  "description": "Register and inspect explicit agent receipts for Rex session recovery.",
+  "author": { "name": "blacktop", "url": "https://github.com/blacktop" },
+  "homepage": "https://github.com/blacktop/rexurrect",
+  "repository": "https://github.com/blacktop/rexurrect",
+  "license": "MIT",
+  "keywords": ["rex", "recovery", "sessions", "persistence"],
+  "hooks": "./hooks/codex.json",
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/setup/SKILL.md"
+    }
+  }
+}

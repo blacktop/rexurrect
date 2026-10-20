@@ -206,7 +206,7 @@ func (c Client) captureNode(ctx context.Context, session snapshot.LiveID, n view
 }
 
 func (c Client) captureCWD(ctx context.Context, session, block snapshot.LiveID, report *snapshot.Report) (string, error) {
-	for attempt := 0; attempt < cwdAttempts; attempt++ {
+	for attempt := range cwdAttempts {
 		if attempt != 0 {
 			timer := time.NewTimer(200 * time.Millisecond)
 			select {

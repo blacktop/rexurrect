@@ -21,7 +21,7 @@ import (
 )
 
 func agentReceipt(n int, harness string) receipt.Receipt {
-	return receipt.Receipt{Key: receipt.Key{SessionID: "session:01234567-89ab-4cde-8fab-0123456789ab", BlockID: fmt.Sprintf("block:01234567-89ab-4cde-8fab-%012x", n)}, Harness: harness, Conversation: fmt.Sprintf("01234567-89ab-4cde-8fab-%012x", n), Model: "model-1.2", Effort: "high"}
+	return receipt.Receipt{SessionID: "session:01234567-89ab-4cde-8fab-0123456789ab", BlockID: fmt.Sprintf("block:01234567-89ab-4cde-8fab-%012x", n), Harness: harness, Conversation: fmt.Sprintf("01234567-89ab-4cde-8fab-%012x", n), Model: "model-1.2", Effort: "high"}
 }
 
 func buildReceiptCLI(t *testing.T, dir string) string {
@@ -91,70 +91,6 @@ esac
 			}
 		})
 	}
-	t.Run("documented-codex-cleanup", func(t *testing.T) {
-		doc, err := os.ReadFile("../../docs/compatibility.md")
-		if err != nil {
-			t.Fatal(err)
-		}
-		const start = "set -l rr_status $status\n"
-		_, rest, ok := strings.Cut(string(doc), "```fish\n"+start)
-		tail, _, end := strings.Cut(rest, "\n```")
-		if !ok || !end {
-			t.Fatal("documented Codex cleanup snippet not found")
-		}
-		fish, err := exec.LookPath("fish")
-		if err != nil {
-			t.Fatal(err)
-		}
-		home := t.TempDir()
-		script := `function rexurrect
-    printf '%s\n' $argv
-    return $RR_CLEAR_STATUS
-end
-function agent
-    return $RR_AGENT_STATUS
-end
-function codex
-    set -l rr_server unix:///private/tmp/rex-hook-test-unused
-    set -l rr_state "$HOME/saved"
-    set -l rr_id "$RR_ID"
-    agent
-` + start + tail + "\nend\ncodex\n"
-		for _, tc := range []struct {
-			name               string
-			id                 string
-			agent, clear, want int
-		}{
-			{"success", r.Conversation, 0, 0, 0},
-			{"agent-failed", r.Conversation, 7, 0, 7},
-			{"clear-failed", r.Conversation, 0, 9, 9},
-			{"both-failed", r.Conversation, 7, 9, 9},
-			{"no-receipt", "", 7, 9, 7},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				defer cancel()
-				cmd := exec.CommandContext(ctx, fish, "--no-config", "--private", "-c", script)
-				cmd.Env = []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home, "PATH=/usr/bin:/bin", "REX_SESSION=" + r.SessionID, "REX_BLOCK=" + r.BlockID, "RR_ID=" + tc.id, fmt.Sprintf("RR_AGENT_STATUS=%d", tc.agent), fmt.Sprintf("RR_CLEAR_STATUS=%d", tc.clear)}
-				out, err := cmd.CombinedOutput()
-				status := 0
-				if err != nil {
-					var exit *exec.ExitError
-					if !errors.As(err, &exit) {
-						t.Fatalf("run documented cleanup: %v", err)
-					}
-					status = exit.ExitCode()
-				}
-				var want string
-				if tc.id != "" {
-					want = strings.Join([]string{"receipt", "clear", "--server", "unix:///private/tmp/rex-hook-test-unused", "--state-dir", filepath.Join(home, "saved"), "--session", r.SessionID, "--block", r.BlockID, "--conversation", tc.id, ""}, "\n")
-				}
-				if status != tc.want || string(out) != want {
-					t.Fatalf("cleanup status=%d, want %d; output=%q, want %q", status, tc.want, out, want)
-				}
-			})
-		}
-	})
 }
 
 func TestReceiptLockTimeoutFlagBoundsWait(t *testing.T) {
@@ -175,12 +111,19 @@ esac
 	release := holdAutoLock(t, dir)
 	for _, action := range []string{"set", "clear"} {
 		t.Run(action, func(t *testing.T) {
-			args := []string{"receipt", action, "--server", "unix://" + c.Socket, "--state-dir", dir, "--rex", c.Binary, "--lock-timeout", "300ms", "--session", r.SessionID, "--block", r.BlockID, "--conversation", r.Conversation, "--harness", r.Harness}
+			args := []string{
+				"receipt", action, "--server", "unix://" + c.Socket, "--state-dir", dir,
+				"--rex", c.Binary, "--lock-timeout", "300ms",
+				"--session", r.SessionID, "--block", r.BlockID,
+				"--conversation", r.Conversation, "--harness", r.Harness,
+			}
 			started := time.Now()
 			out, err := exec.CommandContext(t.Context(), binary, args...).CombinedOutput()
 			elapsed := time.Since(started)
 			var exit *exec.ExitError
-			if !errors.As(err, &exit) || elapsed < 300*time.Millisecond || elapsed > 5*time.Second || !strings.Contains(string(out), "waiting for state lock") {
+			bounded := elapsed >= 300*time.Millisecond && elapsed <= 5*time.Second
+			reported := strings.Contains(string(out), "waiting for state lock")
+			if !errors.As(err, &exit) || !bounded || !reported {
 				t.Fatalf("held lock: %s err=%v elapsed=%s\n%s", action, err, elapsed, out)
 			}
 		})

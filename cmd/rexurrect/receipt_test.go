@@ -47,7 +47,7 @@ esac
 	if err := json.Unmarshal(data, &entries); err != nil {
 		t.Fatal(err)
 	}
-	want := []receipt.Receipt{{Key: receipt.Key{SessionID: session, BlockID: block}, Harness: "claude-ddb", Conversation: conversation, Model: "model-1", Effort: "high"}}
+	want := []receipt.Receipt{{SessionID: session, BlockID: block, Harness: "claude-ddb", Conversation: conversation, Model: "model-1", Effort: "high"}}
 	if !reflect.DeepEqual(entries, want) {
 		t.Fatalf("list: %s", data)
 	}
@@ -66,8 +66,13 @@ esac
 	if err != nil || json.Unmarshal(data, &entries) != nil || !reflect.DeepEqual(entries, want) {
 		t.Fatalf("stale clear removed current conversation: %s %v", data, err)
 	}
-	for _, miss := range [][]string{{"--harness", "codex"}, {"--harness", "codex", "--conversation", conversation}, {"--harness", "claude-ddb", "--conversation", "00000000-0000-0000-0000-000000000000"}} {
-		if _, err := invoke("clear", append([]string{"--session", session, "--block", block}, miss...)...); err != nil {
+	key := []string{"--session", session, "--block", block}
+	for _, miss := range [][]string{
+		{"--harness", "codex"},
+		{"--harness", "codex", "--conversation", conversation},
+		{"--harness", "claude-ddb", "--conversation", "00000000-0000-0000-0000-000000000000"},
+	} {
+		if _, err := invoke("clear", append(append([]string{}, key...), miss...)...); err != nil {
 			t.Fatal(err)
 		}
 		data, err = invoke("list", "--json")
@@ -75,21 +80,29 @@ esac
 			t.Fatalf("guard %q removed the receipt: %s %v", miss, data, err)
 		}
 	}
-	for _, bad := range [][]string{{"--harness", "zsh"}, {"--harness", "codex;id"}, {"--lock-timeout", "0"}, {"--lock-timeout", "61s"}} {
-		if _, err := invoke("clear", append([]string{"--session", session, "--block", block}, bad...)...); err == nil {
+	for _, bad := range [][]string{
+		{"--harness", "zsh"},
+		{"--harness", "codex;id"},
+		{"--lock-timeout", "0"},
+		{"--lock-timeout", "61s"},
+	} {
+		if _, err := invoke("clear", append(append([]string{}, key...), bad...)...); err == nil {
 			t.Fatalf("accepted clear %q", bad)
 		}
 	}
 	if _, err := invoke("set", append(set, "--lock-timeout", "0")...); err == nil {
 		t.Fatal("accepted set --lock-timeout 0")
 	}
-	if _, err := invoke("set", append(set, "--harness", "codex", "--lock-timeout", "61s")...); err == nil {
+	over := append(set, "--harness", "codex", "--lock-timeout", "61s")
+	if _, err := invoke("set", over...); err == nil {
 		t.Fatal("accepted set --lock-timeout 61s")
 	}
 	if _, err := invoke("list", "--lock-timeout", "1s"); err == nil {
 		t.Fatal("list accepted --lock-timeout")
 	}
-	if _, err := invoke("clear", "--session", session, "--block", block, "--harness", "claude-ddb", "--conversation", conversation, "--lock-timeout", "1s"); err != nil {
+	guarded := append(append([]string{}, key...),
+		"--harness", "claude-ddb", "--conversation", conversation, "--lock-timeout", "1s")
+	if _, err := invoke("clear", guarded...); err != nil {
 		t.Fatal(err)
 	}
 	data, err = invoke("list", "--json")

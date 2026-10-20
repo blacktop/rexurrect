@@ -581,6 +581,13 @@ saves, not an already published generation.
 
 ### Hook and wrapper examples
 
+The [portable agent plugin](../plugins/rexurrect/README.md) is the packaged setup
+for Codex and Claude Code. It keeps its scripts and skills together and provides
+repository marketplace metadata. The examples below are the manually managed
+alternative. When migrating, remove only the old rexurrect hook entries after
+the plugin is installed and trusted; retain Rex's own session-start hook and
+other unrelated hooks.
+
 These are documentation examples only; the tool does not install hooks or edit
 dotfiles. The [Claude Code hook reference](https://code.claude.com/docs/en/hooks)
 defines the JSON input on stdin. Save the following as
@@ -590,7 +597,7 @@ defines the JSON input on stdin. Save the following as
 ```sh
 #!/bin/sh
 set -eu
-[ -n "${REX_SESSION:-}" ] && [ -n "${REX_BLOCK:-}" ] || exit 0
+[ -n "${REX_SESSION:-}" ] && [ -n "${REX_BLOCK:-}" ] && [ -n "${RR_HARNESS:-}" ] || exit 0
 rr_server=unix:///absolute/path/rex.sock
 rr_state="$HOME/Library/Application Support/rexurrect"
 rr_event=$(cat)
@@ -599,21 +606,25 @@ rr_id=$(printf '%s' "$rr_event" | jq -er '.session_id')
 case "$rr_kind" in
   SessionStart)
     rr_model=$(printf '%s' "$rr_event" | jq -r '.model // ""')
+    if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+      printf "export RR_HARNESS=''\n" >>"$CLAUDE_ENV_FILE"
+    fi
     rexurrect receipt set --server "$rr_server" --state-dir "$rr_state" \
-      --session "$REX_SESSION" --block "$REX_BLOCK" \
-      --harness "${RR_HARNESS:?set the exact account wrapper}" \
+      --session "$REX_SESSION" --block "$REX_BLOCK" --harness "$RR_HARNESS" \
       --conversation "$rr_id" --model "${rr_model:-${RR_MODEL:-}}" \
       --effort "${RR_EFFORT:-}"
     ;;
   SessionEnd)
     rexurrect receipt clear --server "$rr_server" --state-dir "$rr_state" \
-      --session "$REX_SESSION" --block "$REX_BLOCK" --conversation "$rr_id"
+      --session "$REX_SESSION" --block "$REX_BLOCK" --harness "$RR_HARNESS" \
+      --conversation "$rr_id"
     ;;
 esac
 ```
 
 Merge these entries into the Claude Code settings for the account you intend
-to record. In the existing Fish functions named `claude` and `claude-ddb`,
+to record. The hook blanks `RR_HARNESS` in that session's tool shells, so a
+nested `claude` leaves the root receipt alone. In the existing Fish functions named `claude` and `claude-ddb`,
 export `RR_HARNESS` as that function's exact name, and set `RR_MODEL` and
 `RR_EFFORT` to the account's actual defaults. Insert this before the existing
 launch command so explicit replay flags override those defaults. Keep that
@@ -639,55 +650,117 @@ set argv $rr_argv
 {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"sh \"$HOME/.local/bin/rexurrect-claude-hook\"","timeout":120}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"sh \"$HOME/.local/bin/rexurrect-claude-hook\"","timeout":120}]}]}}
 ```
 
-For Codex, extend the existing Fish functions named `codex` and `codex-team`.
-The command typed during restore must enter those same functions. Add the
-following at the start of each function; keep its existing account setup and
-launch statement in place, forwarding the restored `$argv` unchanged. This
-records `resume UUID`, including its optional model and reasoning flags.
-For a newly started conversation, register its explicit UUID with `receipt set`
-once Codex has provided it; do not guess it from another process or select
-`--last`.
-The [Codex CLI reference](https://developers.openai.com/codex/cli/reference/)
-documents resume by session ID and model/config overrides.
+#### Codex lifecycle hook
+
+Fresh Codex conversations need lifecycle hooks as well as the account wrappers.
+Upgrade rexurrect first and confirm that `receipt clear --help` lists
+`--harness` and `--lock-timeout`. Install `jq` if it is missing. The manual
+setup uses the same [receipt hook](../plugins/rexurrect/scripts/receipt-hook.sh)
+as the portable plugin. From a stable checkout, copy it to a fixed path:
 
 ```fish
-set -l rr_server unix:///absolute/path/rex.sock
-set -l rr_state "$HOME/Library/Application Support/rexurrect"
-set -l rr_harness (status function)
-set -l rr_id
-set -l rr_model ""
-set -l rr_effort ""
-set -l rr_argv $argv
-if test (count $argv) -ge 2; and test "$argv[1]" = resume; and test -n "$REX_SESSION"; and test -n "$REX_BLOCK"
-    set rr_id "$argv[2]"
-    argparse --ignore-unknown 'm/model=' 'c/config=+' -- $argv[3..-1]; or return
-    if set -q _flag_model
-        set rr_model "$_flag_model"
-    end
-    for rr_config in $_flag_config
-        if string match -q 'model_reasoning_effort=*' -- "$rr_config"
-            set rr_effort (string replace -r '^model_reasoning_effort="?([^\"]+)"?$' '$1' -- "$rr_config")
-        end
-    end
-    rexurrect receipt set --server "$rr_server" --state-dir "$rr_state" --session "$REX_SESSION" --block "$REX_BLOCK" --harness "$rr_harness" --conversation "$rr_id" --model "$rr_model" --effort "$rr_effort"
-    or return
-end
-set argv $rr_argv
+set -l rr_plugin /absolute/path/to/rexurrect/plugins/rexurrect
+mkdir -p "$HOME/.agents/hooks"
+cp -n "$rr_plugin/scripts/receipt-hook.sh" "$HOME/.agents/hooks/rexurrect-codex.sh"
 ```
 
-Immediately after the existing launch statement, add this tail inside the same
-function. The original command's exit status is preserved when receipt cleanup
-succeeds. If clearing the receipt fails, the function returns that failure's
-status instead. The invocation must return to the function, so remove `exec`
-from that launch statement if present.
+If the destination already exists, review and update it before continuing.
+Merge these two entries into `~/.codex/hooks.json` and, when configured,
+`~/.codex-team/hooks.json`. Both use the `codex` host argument; the account
+wrapper supplies the exact `codex` or `codex-team` harness through `RR_HARNESS`.
+Preserve existing entries, including Rex's own
+`rex __internal session-start --agent codex` hook. Do not replace the whole
+file or copy trust hashes from another account.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^(startup|resume|clear|fork)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$HOME/.agents/hooks/rexurrect-codex.sh\" codex",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$HOME/.agents/hooks/rexurrect-codex.sh\" codex",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The [Codex hook payload](https://learn.chatgpt.com/docs/hooks) supplies the
+conversation ID and model. The longer startup deadline leaves room for the
+normal state-lock wait. The exit hook uses a 1500 ms lock wait and both receipt
+guards, but its three-second host deadline can still interrupt a slow Rex call.
+The wrapper below provides a second cleanup attempt.
+The hook records the model supplied by Codex and leaves effort empty because
+the payload does not provide it; replay uses that account's effort default.
+Compaction keeps the existing receipt. Nested agent invocations and invocations
+without the matching wrapper marker do not register or clear receipts.
+
+#### Codex receipt wrapper
+
+Install the plugin's [Codex helper](../plugins/rexurrect/shell/_rexurrect_codex.fish)
+in Fish's autoload directory:
 
 ```fish
-set -l rr_status $status
-if test -n "$rr_id"
-    rexurrect receipt clear --server "$rr_server" --state-dir "$rr_state" --session "$REX_SESSION" --block "$REX_BLOCK" --conversation "$rr_id"; or return
-end
-return $rr_status
+set -l rr_plugin /absolute/path/to/rexurrect/plugins/rexurrect
+mkdir -p "$HOME/.config/fish/functions"
+cp -n "$rr_plugin/shell/_rexurrect_codex.fish" "$HOME/.config/fish/functions/"
 ```
+
+Merge or replace a skipped, older helper before relying on the new hook. Keep
+any custom executable target in both launch branches, then reload the function
+or open a new Fish terminal.
+
+The function-scoped marker identifies the account wrapper to the hook. The
+backstop may wait up to the normal 30 seconds and only clears that harness's
+receipt. Nested invocations skip the backstop too, including nested Codex calls
+using the same account. Running overlapping foreground wrappers in one block,
+such as backgrounding `codex &`, is unsupported. A failed backstop returns its
+error instead of silently reporting successful cleanup.
+
+#### Codex account functions
+
+If `codex` is currently only an executable, install the supplied entry point:
+
+```fish
+set -l rr_plugin /absolute/path/to/rexurrect/plugins/rexurrect
+cp -n "$rr_plugin/shell/codex.fish" "$HOME/.config/fish/functions/"
+```
+
+If you already have `codex` or `codex-team` functions, keep their existing
+account setup and executable selection. For wrappers using the PATH `codex`,
+replace only the final launch with
+`_rexurrect_codex codex $argv` or `_rexurrect_codex codex-team $argv`,
+respectively. Remove the old resume-only registration and cleanup snippets.
+Forward the arguments unchanged, and do not use `exec`: the helper must regain
+control when Codex exits. Configure the `codex-team` hooks only when that
+account's wrapper exists.
+
+Start each account once and use `/hooks` to review and trust its two new
+definitions. Then open a fresh conversation through each wrapper and check
+`rexurrect receipt list` with your configured endpoint and state directory.
+Each entry must have the correct Rex block, harness, and conversation UUID.
+Exit normally and verify that the matching receipt disappears. If either
+operation fails, resolve that failure before relying on automatic resume.
+Use a user-initiated Rex restart for the final recovery check, and verify the
+actual resumed conversation identities; a completed layout journal alone is
+not proof that Codex resumed successfully.
 
 `TestAgentResumeRoundTrip` uses only a private Rex server and private Fish
 functions, with no agent service connection. The allowlisted functions register

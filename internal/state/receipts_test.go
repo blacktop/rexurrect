@@ -16,7 +16,7 @@ import (
 )
 
 func stateReceipt(n int) receipt.Receipt {
-	return receipt.Receipt{Key: receipt.Key{SessionID: "session:01234567-89ab-4cde-8fab-0123456789ab", BlockID: fmt.Sprintf("block:01234567-89ab-4cde-8fab-%012x", n)}, Harness: "codex-team", Conversation: "01234567-89ab-4cde-8fab-0123456789ab", Model: "model-1", Effort: "xhigh"}
+	return receipt.Receipt{SessionID: "session:01234567-89ab-4cde-8fab-0123456789ab", BlockID: fmt.Sprintf("block:01234567-89ab-4cde-8fab-%012x", n), Harness: "codex-team", Conversation: "01234567-89ab-4cde-8fab-0123456789ab", Model: "model-1", Effort: "xhigh"}
 }
 
 func TestSnapshotReceiptAndSkipValidation(t *testing.T) {
@@ -119,7 +119,11 @@ func TestReceiptStore(t *testing.T) {
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatal("rejection changed store")
 	}
-	for _, miss := range []receipt.ClearGuard{{Harness: "codex"}, {Harness: "codex", Conversation: r.Conversation}, {Harness: r.Harness, Conversation: "00000000-0000-0000-0000-000000000000"}} {
+	for _, miss := range []receipt.ClearGuard{
+		{Harness: "codex"},
+		{Harness: "codex", Conversation: r.Conversation},
+		{Harness: r.Harness, Conversation: "00000000-0000-0000-0000-000000000000"},
+	} {
 		if err := s.ClearReceipt("host", r.Key, miss); err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +134,8 @@ func TestReceiptStore(t *testing.T) {
 	if err := s.ClearReceipt("host", r.Key, receipt.ClearGuard{Harness: "zsh"}); err == nil {
 		t.Fatal("accepted invalid harness guard")
 	}
-	if err := s.ClearReceipt("host", r.Key, receipt.ClearGuard{Harness: r.Harness, Conversation: r.Conversation}); err != nil {
+	exact := receipt.ClearGuard{Harness: r.Harness, Conversation: r.Conversation}
+	if err := s.ClearReceipt("host", r.Key, exact); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.LoadReceipts("host"); err != nil || len(got) != 0 {

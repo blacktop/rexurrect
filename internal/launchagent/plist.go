@@ -32,9 +32,12 @@ func validLabel(label string) bool {
 		return false
 	}
 	for _, c := range label {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == '_') {
-			return false
+		letter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+		digit := c >= '0' && c <= '9'
+		if letter || digit || c == '.' || c == '-' || c == '_' {
+			continue
 		}
+		return false
 	}
 	return true
 }

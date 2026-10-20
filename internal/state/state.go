@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -210,8 +211,8 @@ func makeDirectory(dir string) error {
 	}
 	// Sync each new directory's name in its parent, including the first one
 	// created below an existing ancestor. Syncing only the leaf is insufficient.
-	for i := len(missing) - 1; i >= 0; i-- {
-		if err := syncDirectory(filepath.Dir(missing[i])); err != nil {
+	for _, m := range slices.Backward(missing) {
+		if err := syncDirectory(filepath.Dir(m)); err != nil {
 			return err
 		}
 	}

@@ -246,7 +246,7 @@ func (c Client) checkInstance(ctx context.Context, want serverIdentity) error {
 		return err
 	}
 	if got.HostID != want.HostID || got.InstanceID != want.InstanceID {
-		return errors.New("Rex server instance changed during restore")
+		return errors.New("the Rex server instance changed during restore")
 	}
 	return nil
 }

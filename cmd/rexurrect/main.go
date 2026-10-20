@@ -42,8 +42,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		var reported *reportedAutoError
-		if !errors.As(err, &reported) {
+		if _, ok := errors.AsType[*reportedAutoError](err); !ok {
 			fmt.Fprintln(os.Stderr, "rexurrect:", err)
 		}
 		os.Exit(1)

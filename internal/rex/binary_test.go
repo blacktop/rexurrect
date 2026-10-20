@@ -232,7 +232,7 @@ func TestRexBinaryFallback(t *testing.T) {
 				if len(calls) == 0 {
 					t.Fatal("Rex was never invoked")
 				}
-				for _, called := range strings.Split(strings.TrimSpace(string(calls)), "\n") {
+				for called := range strings.SplitSeq(strings.TrimSpace(string(calls)), "\n") {
 					if called != want {
 						t.Fatalf("invoked %q, want %q", called, want)
 					}

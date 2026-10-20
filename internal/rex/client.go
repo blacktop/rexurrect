@@ -21,7 +21,7 @@ const (
 	readRetryDelay     = 200 * time.Millisecond
 )
 
-var errOutputLimit = errors.New("Rex output exceeds limit")
+var errOutputLimit = errors.New("output from Rex exceeds limit")
 
 type Client struct {
 	Binary      string // Resolve once before starting an operation.
@@ -49,7 +49,7 @@ func ValidateCallTimeout(timeout time.Duration) error {
 
 func (c Client) command(ctx context.Context, args ...string) ([]byte, error) {
 	if !filepath.IsAbs(c.Socket) || len(c.Socket) >= 104 {
-		return nil, errors.New("Rex socket must be an absolute path shorter than 104 bytes")
+		return nil, errors.New("the Rex socket must be an absolute path shorter than 104 bytes")
 	}
 	timeout := c.CallTimeout
 	if timeout == 0 {
@@ -109,12 +109,10 @@ func (c Client) commandOnce(ctx context.Context, timeout time.Duration, args ...
 	if err != nil {
 		return nil, err
 	}
-	defer out.Close()
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, out.Close())
 	}
-	defer stderr.Close()
 	kill := cmd.Cancel
 	cmd.Cancel = func() error {
 		err := kill()
@@ -178,9 +176,10 @@ func validMethod(method string) bool {
 	}
 	for i := 1; i < len(method); i++ {
 		b := method[i]
-		if !(b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '.' || b == '_') {
-			return false
+		if b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '.' || b == '_' {
+			continue
 		}
+		return false
 	}
 	return true
 }

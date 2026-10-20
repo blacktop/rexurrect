@@ -1,0 +1,12 @@
+{
+  "name": "rexurrect",
+  "description": "Agent lifecycle integration for dependable Rex session recovery.",
+  "owner": { "name": "blacktop" },
+  "plugins": [
+    {
+      "name": "rexurrect",
+      "source": "./plugins/rexurrect",
+      "description": "Register and inspect explicit agent receipts for Rex session recovery."
+    }
+  ]
+}

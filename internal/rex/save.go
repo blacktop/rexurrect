@@ -52,7 +52,7 @@ func (c Client) identity(ctx context.Context) (serverIdentity, error) {
 		return id, err
 	}
 	if id.RexVersion != version.RexVersion {
-		return id, errors.New("Rex server version changed during identity read")
+		return id, errors.New("the Rex server version changed during identity read")
 	}
 	id.Commit = version.Commit
 	if id.Commit == "" || len(id.Commit) > 256 {
@@ -138,7 +138,7 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 		return state.Envelope{}, err
 	}
 	if expected != nil && (captured.HostID != expected.HostID || captured.InstanceID != expected.InstanceID) {
-		return state.Envelope{}, errors.New("Rex server instance changed during automatic cycle")
+		return state.Envelope{}, errors.New("the Rex server instance changed during automatic cycle")
 	}
 	if err := ctx.Err(); err != nil {
 		return state.Envelope{}, err

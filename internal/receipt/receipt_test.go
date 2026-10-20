@@ -6,7 +6,7 @@ import (
 )
 
 func validReceipt() Receipt {
-	return Receipt{Key: Key{SessionID: "session:01234567-89ab-4cde-8fab-0123456789ab", BlockID: "block:01234567-89ab-4cde-8fab-0123456789ab"}, Harness: "claude", Conversation: "01234567-89ab-4cde-8fab-0123456789ab", Model: "model-1.2", Effort: "high"}
+	return Receipt{SessionID: "session:01234567-89ab-4cde-8fab-0123456789ab", BlockID: "block:01234567-89ab-4cde-8fab-0123456789ab", Harness: "claude", Conversation: "01234567-89ab-4cde-8fab-0123456789ab", Model: "model-1.2", Effort: "high"}
 }
 
 func TestInitialInput(t *testing.T) {
@@ -92,6 +92,7 @@ func TestClearGuard(t *testing.T) {
 		{ClearGuard{Harness: "codex"}, true},
 		{ClearGuard{Harness: "codex-team"}, false},
 		{ClearGuard{Conversation: r.Conversation}, true},
+		{ClearGuard{Conversation: "01234567-89AB-4CDE-8FAB-0123456789AB"}, true},
 		{ClearGuard{Conversation: "00000000-0000-0000-0000-000000000000"}, false},
 		{ClearGuard{Harness: "codex", Conversation: r.Conversation}, true},
 		{ClearGuard{Harness: "codex", Conversation: "00000000-0000-0000-0000-000000000000"}, false},
@@ -104,7 +105,13 @@ func TestClearGuard(t *testing.T) {
 			t.Errorf("guard %+v matches=%v, want %v", tc.guard, got, tc.match)
 		}
 	}
-	for _, bad := range []ClearGuard{{Harness: "zsh"}, {Harness: "codex;id"}, {Harness: "Codex"}, {Conversation: "not-a-uuid"}, {Harness: "codex", Conversation: "thr_123"}} {
+	for _, bad := range []ClearGuard{
+		{Harness: "zsh"},
+		{Harness: "codex;id"},
+		{Harness: "Codex"},
+		{Conversation: "not-a-uuid"},
+		{Harness: "codex", Conversation: "thr_123"},
+	} {
 		if err := bad.Validate(); err == nil {
 			t.Errorf("accepted guard %+v", bad)
 		}

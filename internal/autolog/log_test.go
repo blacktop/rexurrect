@@ -26,7 +26,11 @@ func TestAutomaticLogBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +55,11 @@ func TestAutomaticLogBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer other.Close()
+	t.Cleanup(func() {
+		if err := other.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	if w, err := Wrap(other, path, 1024); err != nil || w != other {
 		t.Fatal("unrelated output was wrapped")
 	}
@@ -98,7 +106,11 @@ func TestAutomaticLogIndependentWriters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	t.Cleanup(func() {
+		if err := lock.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}

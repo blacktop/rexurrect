@@ -33,7 +33,10 @@ func uuid(s string) bool {
 			if c != '-' {
 				return false
 			}
-		} else if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			continue
+		}
+		hex := c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+		if !hex {
 			return false
 		}
 	}
@@ -83,6 +86,8 @@ type ClearGuard struct {
 	Conversation string
 }
 
+// Validate rejects a supplied harness outside the allowlist and a supplied
+// conversation that is not a UUID. Empty fields are wildcards and always pass.
 func (g ClearGuard) Validate() error {
 	if g.Harness != "" && !ValidHarness(g.Harness) {
 		return errors.New("receipt harness guard is not allowlisted")
@@ -93,9 +98,12 @@ func (g ClearGuard) Validate() error {
 	return nil
 }
 
+// Matches reports whether r satisfies every supplied guard field. Conversation
+// UUIDs compare case-insensitively because ValidConversationID accepts both
+// hex cases.
 func (g ClearGuard) Matches(r Receipt) bool {
 	return (g.Harness == "" || r.Harness == g.Harness) &&
-		(g.Conversation == "" || r.Conversation == g.Conversation)
+		(g.Conversation == "" || strings.EqualFold(r.Conversation, g.Conversation))
 }
 
 // ValidateMetadata accepts bounded future harness names in saved snapshots.

@@ -118,9 +118,7 @@ func (j Journal) Status(e Envelope) JournalStatus {
 		} else if r.Outcome != "complete" && out.Outcome != "uncertain" {
 			out.Outcome = "pending"
 		}
-		for old, live := range r.IDMap {
-			out.IDMap[old] = live
-		}
+		maps.Copy(out.IDMap, r.IDMap)
 	}
 	return out
 }

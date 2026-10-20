@@ -125,7 +125,7 @@ func TestLaunchAgentLifecycle(t *testing.T) {
 	}
 	runs := func(job string) int {
 		t.Helper()
-		for _, line := range strings.Split(job, "\n") {
+		for line := range strings.SplitSeq(job, "\n") {
 			key, value, ok := strings.Cut(line, "=")
 			if ok && strings.TrimSpace(key) == "runs" {
 				n, err := strconv.Atoi(strings.TrimSpace(value))
@@ -171,7 +171,7 @@ func TestLaunchAgentLifecycle(t *testing.T) {
 		if !bytes.Contains(domain, []byte("disabled services = {")) {
 			t.Fatal("launchctl print GUI domain did not expose its disabled-services section")
 		}
-		for _, line := range strings.Split(string(domain), "\n") {
+		for line := range strings.SplitSeq(string(domain), "\n") {
 			key, value, ok := strings.Cut(line, "=>")
 			if ok && strings.TrimSpace(key) == strconv.Quote(label) {
 				return strings.TrimSpace(value) == "disabled" || strings.TrimSpace(value) == "true"
@@ -330,7 +330,7 @@ func TestLaunchAgentLifecycle(t *testing.T) {
 	for {
 		data, err := os.ReadFile(filepath.Join(dir, autolog.OutName))
 		found := false
-		for _, line := range bytes.Split(data, []byte("\n")) {
+		for line := range bytes.SplitSeq(data, []byte("\n")) {
 			var result AutoResult
 			if json.Unmarshal(line, &result) == nil && result.State == "new_instance" && result.RestoreOutcome == "complete" && result.SavedGeneration == 4 && result.InstanceID == fourth.Envelope.InstanceID {
 				found = true

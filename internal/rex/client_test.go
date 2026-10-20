@@ -97,10 +97,12 @@ func TestCallCancellationClosesInheritedPipes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer descendant.Release()
 	defer func() {
 		if err := descendant.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			t.Errorf("kill fixture descendant: %v", err)
+		}
+		if err := descendant.Release(); err != nil {
+			t.Errorf("release fixture descendant: %v", err)
 		}
 	}()
 	if elapsed >= 3*time.Second {
@@ -110,7 +112,7 @@ func TestCallCancellationClosesInheritedPipes(t *testing.T) {
 		t.Errorf("Call did not report its deadline: %v", callErr)
 	}
 	var exitErr *exec.ExitError
-	if !errors.As(callErr, &exitErr) || exitErr.ProcessState.Pid() != childPID {
+	if !errors.As(callErr, &exitErr) || exitErr.Pid() != childPID {
 		t.Errorf("Call did not wait for child %d: %v", childPID, callErr)
 	}
 	if _, err := syscall.Wait4(childPID, nil, syscall.WNOHANG, nil); !errors.Is(err, syscall.ECHILD) {
