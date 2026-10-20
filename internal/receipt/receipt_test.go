@@ -81,3 +81,32 @@ func TestRejectInvalidReceipts(t *testing.T) {
 		}
 	}
 }
+
+func TestClearGuard(t *testing.T) {
+	r := Receipt{Harness: "codex", Conversation: "01234567-89ab-4cde-8fab-0123456789ab"}
+	for _, tc := range []struct {
+		guard ClearGuard
+		match bool
+	}{
+		{ClearGuard{}, true},
+		{ClearGuard{Harness: "codex"}, true},
+		{ClearGuard{Harness: "codex-team"}, false},
+		{ClearGuard{Conversation: r.Conversation}, true},
+		{ClearGuard{Conversation: "00000000-0000-0000-0000-000000000000"}, false},
+		{ClearGuard{Harness: "codex", Conversation: r.Conversation}, true},
+		{ClearGuard{Harness: "codex", Conversation: "00000000-0000-0000-0000-000000000000"}, false},
+		{ClearGuard{Harness: "codex-team", Conversation: r.Conversation}, false},
+	} {
+		if err := tc.guard.Validate(); err != nil {
+			t.Fatalf("guard %+v: %v", tc.guard, err)
+		}
+		if got := tc.guard.Matches(r); got != tc.match {
+			t.Errorf("guard %+v matches=%v, want %v", tc.guard, got, tc.match)
+		}
+	}
+	for _, bad := range []ClearGuard{{Harness: "zsh"}, {Harness: "codex;id"}, {Harness: "Codex"}, {Conversation: "not-a-uuid"}, {Harness: "codex", Conversation: "thr_123"}} {
+		if err := bad.Validate(); err == nil {
+			t.Errorf("accepted guard %+v", bad)
+		}
+	}
+}

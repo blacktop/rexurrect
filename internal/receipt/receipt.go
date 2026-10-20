@@ -60,12 +60,42 @@ func (r Receipt) Validate() error {
 	if err := r.ValidateMetadata(); err != nil {
 		return err
 	}
-	switch r.Harness {
-	case "claude", "claude-ddb", "codex", "codex-team", "claude-team":
-		return nil
-	default:
+	if !ValidHarness(r.Harness) {
 		return errors.New("receipt harness is not allowlisted")
 	}
+	return nil
+}
+
+// ValidHarness reports whether name is one of the allowlisted account wrappers.
+func ValidHarness(name string) bool {
+	switch name {
+	case "claude", "claude-ddb", "codex", "codex-team", "claude-team":
+		return true
+	default:
+		return false
+	}
+}
+
+// ClearGuard narrows a clear to the receipt whose fields match every supplied
+// guard. An empty field matches any receipt under the key.
+type ClearGuard struct {
+	Harness      string
+	Conversation string
+}
+
+func (g ClearGuard) Validate() error {
+	if g.Harness != "" && !ValidHarness(g.Harness) {
+		return errors.New("receipt harness guard is not allowlisted")
+	}
+	if g.Conversation != "" && !ValidConversationID(g.Conversation) {
+		return errors.New("receipt conversation must be a UUID")
+	}
+	return nil
+}
+
+func (g ClearGuard) Matches(r Receipt) bool {
+	return (g.Harness == "" || r.Harness == g.Harness) &&
+		(g.Conversation == "" || r.Conversation == g.Conversation)
 }
 
 // ValidateMetadata accepts bounded future harness names in saved snapshots.

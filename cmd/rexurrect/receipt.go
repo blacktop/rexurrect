@@ -26,17 +26,24 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	dir := flags.String("state-dir", "", "required private snapshot directory")
 	binary := flags.String("rex", "rex", "Rex executable path")
 	callTimeout := flags.Duration("call-timeout", rex.DefaultCallTimeout, "per-attempt Rex deadline, at most 60s")
+	lockTimeout := rex.DefaultLockTimeout
 	var r receipt.Receipt
+	var guard receipt.ClearGuard
 	var jsonOutput bool
 	flags.StringVar(&r.SessionID, "session", "", "full Rex session ID (optional filter for list)")
 	flags.StringVar(&r.BlockID, "block", "", "full Rex block ID (optional filter for list)")
 	if action == "set" || action == "clear" {
-		flags.StringVar(&r.Conversation, "conversation", "", "conversation UUID (optional matching guard for clear)")
+		flags.DurationVar(&lockTimeout, "lock-timeout", rex.DefaultLockTimeout, "state lock wait, at most 60s")
 	}
 	if action == "set" {
+		flags.StringVar(&r.Conversation, "conversation", "", "conversation UUID")
 		flags.StringVar(&r.Harness, "harness", "", "claude, claude-ddb, codex, codex-team, or claude-team")
 		flags.StringVar(&r.Model, "model", "", "optional model token")
 		flags.StringVar(&r.Effort, "effort", "", "optional low, medium, high, or xhigh")
+	}
+	if action == "clear" {
+		flags.StringVar(&guard.Conversation, "conversation", "", "optional conversation UUID guard")
+		flags.StringVar(&guard.Harness, "harness", "", "optional harness guard; with --conversation both must match")
 	}
 	if action == "list" {
 		flags.BoolVar(&jsonOutput, "json", false, "print a JSON array")
@@ -57,16 +64,19 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err := rex.ValidateCallTimeout(*callTimeout); err != nil {
 		return err
 	}
+	if err := rex.ValidateLockTimeout(lockTimeout); err != nil {
+		return err
+	}
 	resolved, err := resolveRex(*binary, stderr)
 	if err != nil {
 		return err
 	}
-	c := rex.Client{Binary: resolved, Socket: socket, CallTimeout: *callTimeout}
+	c := rex.Client{Binary: resolved, Socket: socket, CallTimeout: *callTimeout, LockTimeout: lockTimeout}
 	switch action {
 	case "set":
 		return c.SetReceipt(ctx, *dir, r)
 	case "clear":
-		return c.ClearReceipt(ctx, *dir, r.Key, r.Conversation)
+		return c.ClearReceipt(ctx, *dir, r.Key, guard)
 	default:
 		// Filters use the same strict ID grammar as registration.
 		if r.SessionID != "" && !receipt.ValidSessionID(r.SessionID) || r.BlockID != "" && !receipt.ValidBlockID(r.BlockID) {

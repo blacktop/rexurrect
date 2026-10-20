@@ -564,12 +564,20 @@ rexurrect receipt clear --server "$rr_server" --state-dir "$rr_state" --session 
 ```
 
 `list` optionally filters by `--session` and/or `--block`. `clear` optionally
-takes `--conversation UUID`; under the lock it removes only that conversation,
-so a late SessionEnd hook cannot clear a newer receipt in the same pane.
+takes `--conversation UUID` and `--harness NAME` as guards; under the lock it
+removes only a receipt matching every supplied guard, so a late SessionEnd hook
+cannot clear a newer receipt in the same pane, and a wrapper's exit cleanup
+cannot clear a receipt another harness registered. With both guards, both must
+match. The harness guard uses the same allowlist as `set`. A guard that matches
+nothing is a successful no-op.
 Receipt commands wait up to 30 seconds for the state lock and return an explicit
-timeout error if it stays held. Save, restore, and automatic cycles retain their
-nonblocking lock behavior. Clearing affects future saves, not an already
-published generation.
+timeout error if it stays held. `set` and `clear` accept `--lock-timeout
+DURATION` (positive, at most 60 seconds) to shorten that wait; a hook whose host
+enforces a hard deadline, such as a Codex SessionEnd hook limited to 3 seconds,
+should pass a shorter value so a contended lock produces a reported failure
+instead of a killed process. The default stays 30 seconds. Save, restore, and
+automatic cycles retain their nonblocking lock behavior. Clearing affects future
+saves, not an already published generation.
 
 ### Hook and wrapper examples
 

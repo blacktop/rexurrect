@@ -96,19 +96,19 @@ func (s *Store) SetReceipt(host string, r receipt.Receipt) error {
 	return s.WriteReceipts(host, append(entries, r))
 }
 
-func (s *Store) ClearReceipt(host string, key receipt.Key, conversation string) error {
+func (s *Store) ClearReceipt(host string, key receipt.Key, guard receipt.ClearGuard) error {
 	if err := key.Validate(); err != nil {
 		return err
 	}
-	if conversation != "" && !receipt.ValidConversationID(conversation) {
-		return errors.New("receipt conversation must be a UUID")
+	if err := guard.Validate(); err != nil {
+		return err
 	}
 	entries, err := s.LoadReceipts(host)
 	if err != nil {
 		return err
 	}
 	for i, r := range entries {
-		if r.Key == key && (conversation == "" || r.Conversation == conversation) {
+		if r.Key == key && guard.Matches(r) {
 			return s.WriteReceipts(host, slices.Delete(entries, i, i+1))
 		}
 	}

@@ -66,6 +66,39 @@ esac
 	if err != nil || json.Unmarshal(data, &entries) != nil || !reflect.DeepEqual(entries, want) {
 		t.Fatalf("stale clear removed current conversation: %s %v", data, err)
 	}
+	for _, miss := range [][]string{{"--harness", "codex"}, {"--harness", "codex", "--conversation", conversation}, {"--harness", "claude-ddb", "--conversation", "00000000-0000-0000-0000-000000000000"}} {
+		if _, err := invoke("clear", append([]string{"--session", session, "--block", block}, miss...)...); err != nil {
+			t.Fatal(err)
+		}
+		data, err = invoke("list", "--json")
+		if err != nil || json.Unmarshal(data, &entries) != nil || !reflect.DeepEqual(entries, want) {
+			t.Fatalf("guard %q removed the receipt: %s %v", miss, data, err)
+		}
+	}
+	for _, bad := range [][]string{{"--harness", "zsh"}, {"--harness", "codex;id"}, {"--lock-timeout", "0"}, {"--lock-timeout", "61s"}} {
+		if _, err := invoke("clear", append([]string{"--session", session, "--block", block}, bad...)...); err == nil {
+			t.Fatalf("accepted clear %q", bad)
+		}
+	}
+	if _, err := invoke("set", append(set, "--lock-timeout", "0")...); err == nil {
+		t.Fatal("accepted set --lock-timeout 0")
+	}
+	if _, err := invoke("set", append(set, "--harness", "codex", "--lock-timeout", "61s")...); err == nil {
+		t.Fatal("accepted set --lock-timeout 61s")
+	}
+	if _, err := invoke("list", "--lock-timeout", "1s"); err == nil {
+		t.Fatal("list accepted --lock-timeout")
+	}
+	if _, err := invoke("clear", "--session", session, "--block", block, "--harness", "claude-ddb", "--conversation", conversation, "--lock-timeout", "1s"); err != nil {
+		t.Fatal(err)
+	}
+	data, err = invoke("list", "--json")
+	if err != nil || string(data) != "[]\n" {
+		t.Fatalf("guarded clear/list: %s %v", data, err)
+	}
+	if _, err := invoke("set", set...); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := invoke("clear", "--session", session, "--block", block); err != nil {
 		t.Fatal(err)
 	}

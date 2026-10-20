@@ -35,7 +35,7 @@ func buildReceiptCLI(t *testing.T, dir string) string {
 }
 
 func TestReceiptHooksWaitForStateLock(t *testing.T) {
-	if receiptLockTimeout < 10*time.Second {
+	if DefaultLockTimeout < 10*time.Second {
 		t.Fatal("receipt lock wait is too short")
 	}
 	r := agentReceipt(1, "codex")
@@ -84,7 +84,7 @@ esac
 			if action == "set" {
 				err = c.SetReceipt(ctx, dir, r)
 			} else {
-				err = c.ClearReceipt(ctx, dir, r.Key, r.Conversation)
+				err = c.ClearReceipt(ctx, dir, r.Key, receipt.ClearGuard{Conversation: r.Conversation})
 			}
 			if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, state.ErrLocked) || !strings.Contains(err.Error(), "waiting for state lock") {
 				t.Fatalf("receipt %s timeout: %v", action, err)
@@ -155,6 +155,44 @@ function codex
 			})
 		}
 	})
+}
+
+func TestReceiptLockTimeoutFlagBoundsWait(t *testing.T) {
+	r := agentReceipt(1, "codex")
+	c := scriptClient(t, `
+case "$6:$8" in
+  whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"instance","rex_version":"version"}' ;;
+  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  api:session.list_blocks) printf '%s\n' '{"blocks":[{"block_id":"`+r.BlockID+`","flavor":"com.superlogical.terminal.shell"}]}' ;;
+  *) exit 1 ;;
+esac
+`)
+	root := t.TempDir()
+	binary, dir := buildReceiptCLI(t, root), filepath.Join(root, "saved")
+	if err := c.SetReceipt(t.Context(), dir, r); err != nil {
+		t.Fatal(err)
+	}
+	release := holdAutoLock(t, dir)
+	for _, action := range []string{"set", "clear"} {
+		t.Run(action, func(t *testing.T) {
+			args := []string{"receipt", action, "--server", "unix://" + c.Socket, "--state-dir", dir, "--rex", c.Binary, "--lock-timeout", "300ms", "--session", r.SessionID, "--block", r.BlockID, "--conversation", r.Conversation, "--harness", r.Harness}
+			started := time.Now()
+			out, err := exec.CommandContext(t.Context(), binary, args...).CombinedOutput()
+			elapsed := time.Since(started)
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || elapsed < 300*time.Millisecond || elapsed > 5*time.Second || !strings.Contains(string(out), "waiting for state lock") {
+				t.Fatalf("held lock: %s err=%v elapsed=%s\n%s", action, err, elapsed, out)
+			}
+		})
+	}
+	release()
+	if got, err := c.ListReceipts(t.Context(), dir); err != nil || len(got) != 1 || got[0] != r {
+		t.Fatalf("bounded failure changed the receipt: %+v %v", got, err)
+	}
+	c.LockTimeout = MaxLockTimeout + time.Second
+	if _, err := c.ListReceipts(t.Context(), dir); err == nil {
+		t.Fatal("client accepted lock timeout above the cap")
+	}
 }
 
 func TestAgentInitialInputOptions(t *testing.T) {

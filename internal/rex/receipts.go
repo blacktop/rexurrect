@@ -12,12 +12,32 @@ import (
 	"github.com/blacktop/rexurrect/internal/state"
 )
 
-const receiptLockTimeout = 30 * time.Second
+// DefaultLockTimeout bounds how long receipt commands wait for the state lock
+// when Client.LockTimeout is zero.
+const DefaultLockTimeout = 30 * time.Second
+
+// MaxLockTimeout caps Client.LockTimeout.
+const MaxLockTimeout = 60 * time.Second
+
+// ValidateLockTimeout checks an explicit receipt lock wait.
+func ValidateLockTimeout(timeout time.Duration) error {
+	if timeout <= 0 || timeout > MaxLockTimeout {
+		return errors.New("--lock-timeout must be positive and at most 60s")
+	}
+	return nil
+}
 
 func (c Client) withReceipts(ctx context.Context, dir string, use func(context.Context, *state.Store, serverIdentity) error) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	store, err := state.OpenWait(ctx, dir, receiptLockTimeout)
+	lockTimeout := c.LockTimeout
+	if lockTimeout == 0 {
+		lockTimeout = DefaultLockTimeout
+	}
+	if err := ValidateLockTimeout(lockTimeout); err != nil {
+		return err
+	}
+	store, err := state.OpenWait(ctx, dir, lockTimeout)
 	if err != nil {
 		return err
 	}
@@ -68,15 +88,16 @@ func (c Client) SetReceipt(ctx context.Context, dir string, r receipt.Receipt) e
 	})
 }
 
-func (c Client) ClearReceipt(ctx context.Context, dir string, key receipt.Key, conversation string) error {
+// ClearReceipt removes the receipt under key when every supplied guard matches.
+func (c Client) ClearReceipt(ctx context.Context, dir string, key receipt.Key, guard receipt.ClearGuard) error {
 	if err := key.Validate(); err != nil {
 		return err
 	}
-	if conversation != "" && !receipt.ValidConversationID(conversation) {
-		return errors.New("receipt conversation must be a UUID")
+	if err := guard.Validate(); err != nil {
+		return err
 	}
 	return c.withReceipts(ctx, dir, func(_ context.Context, store *state.Store, id serverIdentity) error {
-		return store.ClearReceipt(id.HostID, key, conversation)
+		return store.ClearReceipt(id.HostID, key, guard)
 	})
 }
 

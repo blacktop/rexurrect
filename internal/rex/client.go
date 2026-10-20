@@ -28,6 +28,7 @@ type Client struct {
 	Socket      string
 	Env         []string
 	CallTimeout time.Duration // Zero uses DefaultCallTimeout.
+	LockTimeout time.Duration // Receipt state-lock wait; zero uses DefaultLockTimeout.
 }
 
 // SocketPath extracts the socket from an explicit unix:// endpoint argument.

@@ -119,7 +119,18 @@ func TestReceiptStore(t *testing.T) {
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatal("rejection changed store")
 	}
-	if err := s.ClearReceipt("host", r.Key, r.Conversation); err != nil {
+	for _, miss := range []receipt.ClearGuard{{Harness: "codex"}, {Harness: "codex", Conversation: r.Conversation}, {Harness: r.Harness, Conversation: "00000000-0000-0000-0000-000000000000"}} {
+		if err := s.ClearReceipt("host", r.Key, miss); err != nil {
+			t.Fatal(err)
+		}
+		if unchanged, err := os.ReadFile(path); err != nil || !bytes.Equal(before, unchanged) {
+			t.Fatalf("guard %+v changed store", miss)
+		}
+	}
+	if err := s.ClearReceipt("host", r.Key, receipt.ClearGuard{Harness: "zsh"}); err == nil {
+		t.Fatal("accepted invalid harness guard")
+	}
+	if err := s.ClearReceipt("host", r.Key, receipt.ClearGuard{Harness: r.Harness, Conversation: r.Conversation}); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.LoadReceipts("host"); err != nil || len(got) != 0 {
