@@ -2,7 +2,6 @@
   <a href="https://github.com/blacktop/rexurrect"><img alt="Rexurrect Logo" src="docs/rexurrect_logo_readme.webp" width="200" height="200" /></a>
 </p>
 <h1 align="center">rexurrect</h1>
-<p align="center">Restart Rex sessions after a reboot</p>
 
 rexurrect restores local Rex sessions after a server restart or Mac reboot,
 including tabs, splits, and working directories. The optional agent plugin also
