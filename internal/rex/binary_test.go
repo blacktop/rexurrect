@@ -87,7 +87,7 @@ func TestRexBinaryFallback(t *testing.T) {
 	commands := [][]string{
 		{"save"}, {"status", "--json"}, {"restore", "--json"},
 		{"auto", "--json", "--wait", "1s", "--timeout", "5s"},
-		{"receipt", "set", "--session", "session:" + uuid, "--block", "block:" + uuid, "--harness", "codex", "--conversation", uuid},
+		{"receipt", "set", "--session", "session:" + uuid, "--block", "block:" + uuid, "--host", "codex", "--command", "codex", "--conversation", uuid},
 		{"receipt", "list", "--json"},
 		{"receipt", "clear", "--session", "session:" + uuid, "--block", "block:" + uuid},
 	}

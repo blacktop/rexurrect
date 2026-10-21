@@ -50,7 +50,7 @@ func (e Envelope) Validate() error {
 	if e.Generation == 0 || e.CapturedAt.IsZero() || !bounded(e.RexVersion, 4096) || !bounded(e.Commit, 4096) || !bounded(e.HostID, 256) || !bounded(e.InstanceID, 256) {
 		return errors.New("invalid envelope metadata")
 	}
-	if e.Snapshot.Version != 1 && e.Snapshot.Version != snapshot.Version {
+	if e.Snapshot.Version < 1 || e.Snapshot.Version > snapshot.Version {
 		return fmt.Errorf("unsupported snapshot version %d", e.Snapshot.Version)
 	}
 	ids, err := e.Snapshot.Inventory()
@@ -329,7 +329,7 @@ func (s *Store) Publish(e Envelope, allowEmpty bool) (Envelope, error) {
 		return Envelope{}, errors.New("refusing empty snapshot over nonempty last-known-good; use --allow-empty")
 	}
 	e.FormatVersion, e.Generation = FormatVersion, previous+1
-	if e.Snapshot.Version == 1 {
+	if e.Snapshot.Version != snapshot.Version {
 		// Validate the old schema before upgrading the version we publish.
 		if err := e.Validate(); err != nil {
 			return Envelope{}, err

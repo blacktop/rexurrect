@@ -19,6 +19,7 @@ import (
 )
 
 func TestPluginMetadata(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join("..", "..", "plugins", "rexurrect")
 	read := func(path string, value any) {
 		t.Helper()
@@ -30,35 +31,37 @@ func TestPluginMetadata(t *testing.T) {
 			t.Fatalf("%s: %v", path, err)
 		}
 	}
-	var portable struct {
-		Schema     string `json:"$schema"`
+	var codex struct {
 		Name       string `json:"name"`
 		Version    string `json:"version"`
+		Skills     string `json:"skills"`
+		Hooks      string `json:"hooks"`
 		Extensions struct {
 			OpenAI struct {
-				Hooks           string `json:"hooks"`
 				OnboardingSkill string `json:"onboardingSkill"`
 			} `json:"com.openai"`
 		} `json:"extensions"`
 	}
-	read(filepath.Join(root, "plugin.json"), &portable)
-	if portable.Schema != "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json" ||
-		portable.Name != "rexurrect" || portable.Version == "" ||
-		portable.Extensions.OpenAI.Hooks != "./hooks/codex.json" ||
-		portable.Extensions.OpenAI.OnboardingSkill != "./skills/setup/SKILL.md" {
-		t.Fatalf("invalid portable plugin identity or Codex hook selection: %+v", portable)
+	read(filepath.Join(root, ".codex-plugin", "plugin.json"), &codex)
+	if codex.Name != "rexurrect" || codex.Version == "" ||
+		codex.Skills != "./skills/" || codex.Hooks != "./hooks/codex.json" ||
+		codex.Extensions.OpenAI.OnboardingSkill != "./skills/setup/SKILL.md" {
+		t.Fatalf("invalid Codex plugin identity or hook selection: %+v", codex)
 	}
-	for _, host := range []string{"codex", "claude"} {
-		var overlay struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-			Hooks   string `json:"hooks"`
-		}
-		read(filepath.Join(root, "."+host+"-plugin", "plugin.json"), &overlay)
-		if overlay.Name != portable.Name || overlay.Version != portable.Version || overlay.Hooks != "./hooks/"+host+".json" {
-			t.Fatalf("%s overlay differs from portable package: %+v", host, overlay)
-		}
-		if _, err := os.Stat(filepath.Join(root, strings.TrimPrefix(overlay.Hooks, "./"))); err != nil {
+	if _, err := os.Lstat(filepath.Join(root, "plugin.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("root Agent Plugins manifest would suppress hooks in Codex 0.163.0: %v", err)
+	}
+	var claude struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		Hooks   string `json:"hooks"`
+	}
+	read(filepath.Join(root, ".claude-plugin", "plugin.json"), &claude)
+	if claude.Name != codex.Name || claude.Version != codex.Version || claude.Hooks != "./hooks/claude.json" {
+		t.Fatalf("Claude manifest differs from Codex package: %+v", claude)
+	}
+	for _, hooks := range []string{codex.Hooks, claude.Hooks} {
+		if _, err := os.Stat(filepath.Join(root, strings.TrimPrefix(hooks, "./"))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -70,10 +73,13 @@ func TestPluginMetadata(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, entry := range []string{"codex", "claude"} {
-		if _, err := os.Stat(filepath.Join(root, "shell", entry+".fish")); err != nil {
+	for _, entry := range []string{"rexurrect.sh", "codex.fish", "claude.fish"} {
+		if _, err := os.Stat(filepath.Join(root, "shell", entry)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if info, err := os.Stat(filepath.Join(root, "shell", "rexurrect-launch")); err != nil || info.Mode().Perm()&0111 == 0 {
+		t.Fatalf("rexurrect-launch must be an executable script: %v %v", info, err)
 	}
 	var claudeMarket struct {
 		Name    string `json:"name"`
@@ -84,7 +90,7 @@ func TestPluginMetadata(t *testing.T) {
 	}
 	read(filepath.Join("..", "..", ".claude-plugin", "marketplace.json"), &claudeMarket)
 	if claudeMarket.Name != "rexurrect" || len(claudeMarket.Plugins) != 1 ||
-		claudeMarket.Plugins[0].Name != portable.Name ||
+		claudeMarket.Plugins[0].Name != codex.Name ||
 		claudeMarket.Plugins[0].Source != "./plugins/rexurrect" {
 		t.Fatalf("shared marketplace does not resolve the package: %+v", claudeMarket)
 	}
@@ -113,6 +119,7 @@ func decodePluginHooks(t *testing.T, data []byte) map[string][]pluginHookGroup {
 }
 
 func TestPluginReceiptHooks(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	pack := filepath.Join(root, "plugin with spaces")
 	if err := os.CopyFS(pack, os.DirFS("../../plugins/rexurrect")); err != nil {
@@ -164,7 +171,7 @@ func TestPluginReceiptHooks(t *testing.T) {
 		}
 	}
 
-	r := agentReceipt(1, "codex")
+	r := commandReceipt(1, "codex", "codex")
 	r.Effort = ""
 	c := scriptClient(t, `
 case "$6:$8" in
@@ -199,12 +206,7 @@ esac
 			t.Fatal(err)
 		}
 	}
-	baseEnv := []string{
-		"HOME=" + root, "PATH=" + bin + ":/usr/bin:/bin",
-		"CLAUDE_PLUGIN_ROOT=" + pack, "PLUGIN_ROOT=" + pack,
-		"REX_SESSION=" + r.SessionID, "REX_BLOCK=" + r.BlockID,
-		"REXURRECT_SERVER=unix://" + c.Socket, "REXURRECT_STATE_DIR=" + dir,
-	}
+	baseEnv := append(paneEnv(root, bin, "unix://"+c.Socket, dir), "CLAUDE_PLUGIN_ROOT="+pack, "PLUGIN_ROOT="+pack)
 	runPayload := func(t *testing.T, host, owner string, payload map[string]string, extra ...string) error {
 		t.Helper()
 		data, err := json.Marshal(payload)
@@ -216,7 +218,8 @@ esac
 		ctx, cancel := context.WithTimeout(t.Context(), time.Duration(command.Timeout)*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command.Command)
-		cmd.Env = append(append(slices.Clone(baseEnv), "RR_HARNESS="+owner), extra...)
+		markers := []string{"RR_HARNESS=" + owner, "RR_HOST=" + strings.TrimPrefix(host, "manual-")}
+		cmd.Env = append(append(slices.Clone(baseEnv), markers...), extra...)
 		cmd.Stdin = bytes.NewReader(data)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -247,30 +250,24 @@ esac
 		{"codex", "codex", "resume", nil},
 		{"codex", "codex", "clear", nil},
 		{"codex", "codex", "fork", nil},
-		{"codex", "codex-team", "startup", nil},
 		{"manual-codex", "codex", "startup", nil},
-		{"manual-codex", "codex-team", "startup", nil},
+		{"manual-codex", "codex", "compact", nil},
 		{"claude", "claude", "startup", []string{"CLAUDECODE=1", "RR_EFFORT=high"}},
 		{"claude", "claude", "resume", []string{"CLAUDECODE=1", "RR_EFFORT=high"}},
 		{"claude", "claude", "clear", []string{"CLAUDECODE=1", "RR_EFFORT=high"}},
 		{"claude", "claude", "compact", []string{"CLAUDECODE=1", "RR_EFFORT=high"}},
 		{"claude", "claude", "fork", []string{"CLAUDECODE=1", "RR_EFFORT=high"}},
-		{"claude", "claude-ddb", "startup", []string{"CLAUDECODE=1", "RR_EFFORT=high"}},
-		{"claude", "claude-team", "startup", []string{"CLAUDECODE=1", "RR_EFFORT=high"}},
 	} {
 		t.Run(tc.host+"/"+tc.harness+"/"+tc.source, func(t *testing.T) {
 			if err := run(t, tc.host, tc.harness, "SessionStart", tc.source, r.Conversation, tc.extra...); err != nil {
 				t.Fatal(err)
 			}
 			want := r
-			want.Harness = tc.harness
+			want.Host, want.Command = strings.TrimPrefix(tc.host, "manual-"), tc.harness
 			if tc.host == "claude" {
 				want.Effort = "high"
 			}
 			assertReceipts(t, want)
-			if tc.harness == "claude-team" && want.InitialInput() != "" {
-				t.Fatal("plugin made claude-team automatically resumable")
-			}
 			if tc.source == "startup" {
 				if err := run(t, tc.host, tc.harness, "SessionEnd", "", agentReceipt(2, "codex").Conversation, tc.extra...); err != nil {
 					t.Fatal(err)
@@ -284,7 +281,7 @@ esac
 		})
 	}
 
-	outer := agentReceipt(3, "claude-ddb")
+	outer := commandReceipt(3, "codex", "codex")
 	outer.Key = r.Key
 	if err := c.SetReceipt(t.Context(), dir, outer); err != nil {
 		t.Fatal(err)
@@ -305,13 +302,13 @@ esac
 		wantErr                          bool
 	}{
 		{"missing-owner", "codex", "", "SessionStart", "startup", nil, false},
-		{"foreign-codex-owner", "codex", "claude-ddb", "SessionStart", "startup", nil, false},
-		{"foreign-claude-owner", "claude", "codex", "SessionStart", "startup", nil, false},
+		{"missing-host", "codex", "codex", "SessionStart", "startup", []string{"RR_HOST="}, false},
+		{"foreign-host", "codex", "codex", "SessionStart", "startup", []string{"RR_HOST=claude"}, false},
+		{"claude-marker-under-codex", "claude", "claude", "SessionStart", "startup", []string{"RR_HOST=codex"}, false},
 		{"nested-claude", "codex", "codex", "SessionStart", "startup", []string{"CLAUDECODE=1"}, false},
 		{"nested-codex", "codex", "codex", "SessionStart", "startup", []string{"CODEX_THREAD_ID=outer"}, false},
 		{"claude-under-codex", "claude", "claude", "SessionStart", "startup", []string{"CODEX_THREAD_ID=outer"}, false},
 		{"nested-end", "codex", "codex", "SessionEnd", "", []string{"CODEX_THREAD_ID=outer"}, false},
-		{"compact", "codex", "codex", "SessionStart", "compact", nil, false},
 		{"unknown-source", "claude", "claude", "SessionStart", "unknown", nil, false},
 		{"missing-block", "codex", "codex", "SessionStart", "startup", []string{"REX_BLOCK="}, false},
 		{"oversized-input", "codex", "codex", "SessionStart", strings.Repeat("x", 65537), nil, true},
@@ -327,7 +324,7 @@ esac
 			}
 		})
 	}
-	if err := runPayload(t, "claude", "claude-ddb", map[string]string{
+	if err := runPayload(t, "claude", "claude", map[string]string{
 		"hook_event_name": "SessionStart", "session_id": r.Conversation,
 		"source": "startup", "model": r.Model, "agent_id": "child-agent",
 	}, "CLAUDECODE=1"); err != nil {
@@ -342,18 +339,21 @@ esac
 	if err := os.WriteFile(envFile, []byte(existing), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(t, "claude", "claude-ddb", "SessionStart", "resume", outer.Conversation, "CLAUDECODE=1", "RR_EFFORT=high", "CLAUDE_ENV_FILE="+envFile); err != nil {
+	const marker = "export RR_HARNESS='' RR_HOST=''\n"
+	if err := run(t, "claude", "claude", "SessionStart", "resume", outer.Conversation,
+		"CLAUDECODE=1", "RR_EFFORT=high", "CLAUDE_ENV_FILE="+envFile); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(envFile)
-	if err != nil || string(data) != existing+"export RR_HARNESS=''\n" {
+	if err != nil || string(data) != existing+marker {
 		t.Fatalf("Claude tool environment changed unexpectedly: %q: %v", data, err)
 	}
-	if err := run(t, "claude", "claude-ddb", "SessionStart", "compact", outer.Conversation, "CLAUDECODE=1", "RR_EFFORT=high", "CLAUDE_ENV_FILE="+envFile); err != nil {
+	if err := run(t, "claude", "claude", "SessionStart", "compact", outer.Conversation,
+		"CLAUDECODE=1", "RR_EFFORT=high", "CLAUDE_ENV_FILE="+envFile); err != nil {
 		t.Fatal(err)
 	}
 	data, err = os.ReadFile(envFile)
-	if err != nil || string(data) != existing+"export RR_HARNESS=''\n" {
+	if err != nil || string(data) != existing+marker {
 		t.Fatalf("repeated SessionStart duplicated the tool environment marker: %q: %v", data, err)
 	}
 
@@ -370,21 +370,47 @@ esac
 	}
 }
 
-func TestPluginShellHelpers(t *testing.T) {
-	fish, err := exec.LookPath("fish")
-	if err != nil {
-		t.Fatal(err)
+// paneEnv is the environment a Rex pane gives the launcher and hooks: the
+// receipt key, the rexurrect endpoint and state directory, and a PATH that
+// resolves the fixture executables first.
+func paneEnv(home, bin, server, stateDir string) []string {
+	r := agentReceipt(1, "")
+	return []string{
+		"HOME=" + home, "PATH=" + bin + ":/usr/bin:/bin",
+		"REX_SESSION=" + r.SessionID, "REX_BLOCK=" + r.BlockID,
+		"REXURRECT_SERVER=" + server, "REXURRECT_STATE_DIR=" + stateDir,
 	}
+}
+
+type launchCase struct {
+	name, host, command string
+	args, env           []string
+	agent, clear, want  int
+	// owner is the RR_HARNESS the agent must see; empty means a plain launch
+	// with blank markers and no cleanup.
+	owner         string
+	model, effort string
+	// wantArgs defaults to args.
+	wantArgs []string
+}
+
+func (tc launchCase) owned() bool { return tc.owner != "" }
+
+// launchFixture installs fake codex, claude, and rexurrect executables that
+// record what the launcher passed them, next to the packaged shell files.
+func launchFixture(t *testing.T) (bin string) {
+	t.Helper()
 	pack, err := filepath.Abs("../../plugins/rexurrect")
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, bin := t.TempDir(), t.TempDir()
+	bin = t.TempDir()
 	agent := `#!/bin/sh
 [ "${RR_HARNESS:-}" = "$RR_EXPECT_OWNER" ] || exit 91
 [ "$RR_ACCOUNT_SENTINEL" = keep-me ] || exit 92
 [ "${RR_MODEL:-}" = "$RR_EXPECT_MODEL" ] || exit 93
 [ "${RR_EFFORT:-}" = "$RR_EXPECT_EFFORT" ] || exit 94
+[ "${RR_HOST:-}" = "$RR_EXPECT_HOST" ] || exit 95
 printf '%s\n' "$@" > "$RR_ARGS_PATH"
 exit "$RR_AGENT_STATUS"
 `
@@ -397,107 +423,179 @@ exit "$RR_CLEAR_STATUS"
 			t.Fatal(err)
 		}
 	}
-	r := agentReceipt(1, "codex")
-	for _, host := range []struct{ name, harness string }{{"codex", "codex"}, {"codex", "codex-team"}, {"claude", "claude"}, {"claude", "claude-ddb"}} {
-		for _, tc := range []struct {
-			name, marker       string
-			agent, clear, want int
-			clears, nested     bool
-		}{
-			{"success", "", 0, 0, 0, true, false},
-			{"agent-failed", "", 7, 0, 7, true, false},
-			{"clear-failed", "", 0, 9, 9, true, false},
-			{"both-failed", "", 7, 9, 9, true, false},
-			{"missing-block", "REX_BLOCK=", 7, 9, 7, false, false},
-			{"nested-claude", "CLAUDECODE=1", 7, 9, 7, false, true},
-			{"nested-codex", "CODEX_THREAD_ID=outer", 7, 9, 7, false, true},
-			{"nested-helper", "REXURRECT_WRAPPER_ACTIVE=1", 7, 9, 7, false, true},
-		} {
-			t.Run(host.harness+"/"+tc.name, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				defer cancel()
-				argsPath, clearPath := filepath.Join(t.TempDir(), "args"), filepath.Join(t.TempDir(), "clear")
-				owner := host.harness
-				if tc.nested {
-					owner = ""
-				}
-				arguments := ` 'arg with spaces' -c 'model_reasoning_effort="high"'`
-				wantArgs := "arg with spaces\n-c\nmodel_reasoning_effort=\"high\"\n"
-				model, effort := "default-model", "medium"
-				if host.name == "claude" {
-					arguments = ` 'arg with spaces' --model model-1.2 --effort high`
-					wantArgs = "arg with spaces\n--model\nmodel-1.2\n--effort\nhigh\n"
-					if !tc.nested {
-						model, effort = "model-1.2", "high"
-					}
-				}
-				invoke := "_rexurrect_" + host.name + ` "$RR_TEST_HARNESS"`
-				script := `source "$RR_HELPER"` + "\n"
-				if host.harness == host.name {
-					script += `source "$RR_ENTRY"` + "\n"
-					invoke = host.name
-				}
-				script += invoke + arguments + "\n"
-				cmd := exec.CommandContext(ctx, fish, "--no-config", "--private", "-c", script)
-				cmd.Env = []string{
-					"HOME=" + root, "XDG_CONFIG_HOME=" + root, "XDG_DATA_HOME=" + root,
-					"PATH=" + bin + ":/usr/bin:/bin", "RR_HELPER=" + filepath.Join(pack, "shell", "_rexurrect_"+host.name+".fish"),
-					"RR_ENTRY=" + filepath.Join(pack, "shell", host.name+".fish"),
-					"RR_TEST_HARNESS=" + host.harness, "RR_HARNESS=" + host.harness, "RR_EXPECT_OWNER=" + owner,
-					"RR_MODEL=default-model", "RR_EFFORT=medium", "RR_EXPECT_MODEL=" + model, "RR_EXPECT_EFFORT=" + effort,
-					"RR_ACCOUNT_SENTINEL=keep-me", "RR_ARGS_PATH=" + argsPath, "RR_CLEAR_PATH=" + clearPath,
-					"REX_SESSION=" + r.SessionID, "REX_BLOCK=" + r.BlockID,
-					"REXURRECT_SERVER=unix:///private/tmp/rex-plugin-test-unused", "REXURRECT_STATE_DIR=" + filepath.Join(root, "saved"),
-					fmt.Sprintf("RR_AGENT_STATUS=%d", tc.agent), fmt.Sprintf("RR_CLEAR_STATUS=%d", tc.clear),
-				}
-				if tc.marker != "" {
-					cmd.Env = append(cmd.Env, tc.marker)
-				}
-				out, err := cmd.CombinedOutput()
-				status := 0
-				if err != nil {
-					var exit *exec.ExitError
-					if !errors.As(err, &exit) {
-						t.Fatal(err)
-					}
-					status = exit.ExitCode()
-				}
-				if status != tc.want {
-					t.Fatalf("wrapper exit %d, want %d: %s", status, tc.want, out)
-				}
-				args, err := os.ReadFile(argsPath)
-				if err != nil || string(args) != wantArgs {
-					t.Fatalf("wrapper changed arguments: %q: %v", args, err)
-				}
-				data, err := os.ReadFile(clearPath)
-				if !tc.clears {
-					if !errors.Is(err, os.ErrNotExist) {
-						t.Fatalf("nested wrapper cleared the enclosing receipt: %q: %v", data, err)
-					}
-					return
-				}
-				want := strings.Join([]string{
-					"receipt", "clear", "--server", "unix:///private/tmp/rex-plugin-test-unused",
-					"--state-dir", filepath.Join(root, "saved"), "--session", r.SessionID,
-					"--block", r.BlockID, "--harness", host.harness, "",
-				}, "\n")
-				if err != nil || string(data) != want {
-					t.Fatalf("wrapper cleanup: %q, want %q: %v", data, want, err)
-				}
+	for _, name := range []string{"rexurrect-launch", "rexurrect.sh", "codex.fish", "claude.fish"} {
+		if err := os.Symlink(filepath.Join(pack, "shell", name), filepath.Join(bin, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return bin
+}
+
+// checkLaunch runs one shell command through the fixture and checks the
+// arguments the agent saw, the exit status, and the cleanup call.
+func checkLaunch(t *testing.T, bin string, tc launchCase, path string, args ...string) {
+	t.Helper()
+	if tc.wantArgs == nil {
+		tc.wantArgs = tc.args
+	}
+	if tc.model == "" {
+		tc.model = "default-model"
+	}
+	if tc.effort == "" {
+		tc.effort = "medium"
+	}
+	host := ""
+	if tc.owned() {
+		host = tc.host
+	}
+	argsPath, clearPath := filepath.Join(t.TempDir(), "args"), filepath.Join(t.TempDir(), "clear")
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = append(paneEnv(filepath.Dir(bin), bin, "unix:///private/tmp/rex-plugin-test-unused", filepath.Join(bin, "saved")),
+		"XDG_CONFIG_HOME="+bin, "XDG_DATA_HOME="+bin,
+		"RR_EXPECT_OWNER="+tc.owner, "RR_EXPECT_HOST="+host,
+		"RR_MODEL=default-model", "RR_EFFORT=medium",
+		"RR_EXPECT_MODEL="+tc.model, "RR_EXPECT_EFFORT="+tc.effort,
+		"RR_ACCOUNT_SENTINEL=keep-me", "RR_ARGS_PATH="+argsPath, "RR_CLEAR_PATH="+clearPath,
+		fmt.Sprintf("RR_AGENT_STATUS=%d", tc.agent), fmt.Sprintf("RR_CLEAR_STATUS=%d", tc.clear))
+	cmd.Env = append(cmd.Env, tc.env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil && cmd.ProcessState == nil {
+		t.Fatal(err)
+	}
+	if status := cmd.ProcessState.ExitCode(); status != tc.want {
+		t.Fatalf("launcher exit %d, want %d: %s", status, tc.want, out)
+	}
+	got, err := os.ReadFile(argsPath)
+	if err != nil || string(got) != strings.Join(tc.wantArgs, "\n")+"\n" {
+		t.Fatalf("launcher changed arguments: %q, want %q: %v", got, tc.wantArgs, err)
+	}
+	data, err := os.ReadFile(clearPath)
+	if !tc.owned() {
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("plain launch cleared the enclosing receipt: %q: %v", data, err)
+		}
+		return
+	}
+	r := agentReceipt(1, "")
+	want := strings.Join([]string{
+		"receipt", "clear", "--server", "unix:///private/tmp/rex-plugin-test-unused",
+		"--state-dir", filepath.Join(bin, "saved"), "--session", r.SessionID,
+		"--block", r.BlockID, "--command", tc.command, "",
+	}, "\n")
+	if err != nil || string(data) != want {
+		t.Fatalf("launcher cleanup: %q, want %q: %v", data, want, err)
+	}
+}
+
+var (
+	codexArgs  = []string{"arg with spaces", "-c", `model_reasoning_effort="high"`}
+	claudeArgs = []string{"arg with spaces", "--model", "model-1.2", "--effort", "high"}
+)
+
+// ownedCodex is a Rex-pane launch of codex: --no-daemon is added and the
+// launcher captured the effort from -c model_reasoning_effort.
+func ownedCodex(name string, agent, clear, want int, env ...string) launchCase {
+	return launchCase{name: name, host: "codex", command: "codex", args: codexArgs, env: env,
+		agent: agent, clear: clear, want: want, owner: "codex", effort: "high",
+		wantArgs: append([]string{"--no-daemon"}, codexArgs...)}
+}
+
+// plainCodex passes the arguments through untouched with blank markers.
+func plainCodex(name string, args []string, env ...string) launchCase {
+	return launchCase{name: name, host: "codex", command: "codex", args: args, env: env,
+		agent: 7, clear: 9, want: 7}
+}
+
+func ownedClaude(name string, args []string, model, effort string) launchCase {
+	return launchCase{name: name, host: "claude", command: "claude", args: args, owner: "claude",
+		model: model, effort: effort}
+}
+
+func TestPluginShellHelpers(t *testing.T) {
+	t.Parallel()
+	bin := launchFixture(t)
+	launcher := filepath.Join(bin, "rexurrect-launch")
+	cases := []launchCase{
+		ownedCodex("success", 0, 0, 0),
+		ownedCodex("agent-failed", 7, 0, 7),
+		ownedCodex("clear-failed", 0, 9, 9),
+		ownedCodex("both-failed", 7, 9, 9),
+		{name: "explicit-no-daemon", host: "codex", command: "codex", owner: "codex", effort: "high",
+			args: append([]string{"--no-daemon"}, codexArgs...)},
+		{name: "literal-no-daemon", host: "codex", command: "codex", owner: "codex", effort: "high",
+			args:     append(slices.Clone(codexArgs), "--", "--no-daemon"),
+			wantArgs: append(append([]string{"--no-daemon"}, codexArgs...), "--", "--no-daemon")},
+		{name: "codex-model-flag", host: "codex", command: "codex", owner: "codex", model: "gpt-x",
+			args: []string{"-m", "gpt-x", "prompt"}, wantArgs: []string{"--no-daemon", "-m", "gpt-x", "prompt"}},
+		{name: "custom-command", host: "codex", command: "codex-work", owner: "codex-work", effort: "high",
+			args: codexArgs, wantArgs: append([]string{"--no-daemon"}, codexArgs...)},
+		plainCodex("missing-block", codexArgs, "REX_BLOCK="),
+		plainCodex("missing-session", codexArgs, "REX_SESSION="),
+		plainCodex("nested-claude", codexArgs, "CLAUDECODE=1"),
+		plainCodex("nested-codex", codexArgs, "CODEX_THREAD_ID=outer"),
+		plainCodex("preset-owner", codexArgs, "RR_HARNESS=codex"),
+		plainCodex("blank-preset-owner", codexArgs, "RR_HARNESS="),
+		plainCodex("foreign-host", codexArgs, "RR_HOST=claude"),
+		plainCodex("daemon-subcommand", []string{"agents", "--json"}),
+		plainCodex("daemon-subcommand-after-options", []string{"-c", "model_reasoning_effort=high", "agents"}),
+		plainCodex("daemon-subcommand-remote-control", []string{"--enable", "x", "remote-control", "status"}),
+		ownedClaude("claude-success", claudeArgs, "model-1.2", "high"),
+		ownedClaude("claude-equals", []string{"--model=model-2", "--effort=low"}, "model-2", "low"),
+		ownedClaude("claude-defaults", []string{"prompt"}, "", ""),
+		ownedClaude("claude-after-separator", []string{"--", "--model", "ignored"}, "", ""),
+		{name: "claude-custom-command", host: "claude", command: "claude-work", owner: "claude-work",
+			args: claudeArgs, model: "model-1.2", effort: "high"},
+		{name: "claude-nested", host: "claude", command: "claude", args: claudeArgs,
+			env: []string{"CLAUDECODE=1"}, agent: 7, clear: 9, want: 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			checkLaunch(t, bin, tc, "/bin/sh", append([]string{launcher, tc.host, tc.command}, tc.args...)...)
+		})
+	}
+	t.Run("usage", func(t *testing.T) {
+		t.Parallel()
+		for _, args := range [][]string{{}, {"codex"}, {"vim", "vim"}, {"codex", ""}} {
+			cmd := exec.CommandContext(t.Context(), "/bin/sh", append([]string{launcher}, args...)...)
+			cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+			if err := cmd.Run(); err == nil || cmd.ProcessState.ExitCode() != 2 {
+				t.Fatalf("launcher accepted %q: %v", args, err)
+			}
+		}
+	})
+	// The shell entry points are one-liners; each installed shell must forward
+	// through the launcher unchanged.
+	entries := map[string]launchCase{
+		"codex":  ownedCodex("codex", 0, 0, 0),
+		"claude": ownedClaude("claude", []string{"x", "--model", "model-1.2", "--effort", "high"}, "model-1.2", "high"),
+	}
+	invoke := map[string]string{
+		"codex":  `codex 'arg with spaces' -c 'model_reasoning_effort="high"'`,
+		"claude": `claude x --model model-1.2 --effort high`,
+	}
+	source := `. "` + filepath.Join(bin, "rexurrect.sh") + `"`
+	for _, shell := range []struct {
+		name, source string
+		args         func(script string) []string
+	}{
+		{"bash", source, func(script string) []string { return []string{"--noprofile", "--norc", "-c", script} }},
+		{"zsh", source, func(script string) []string { return []string{"-f", "-c", script} }},
+		{"fish", `source "` + filepath.Join(bin, "codex.fish") + `"; source "` + filepath.Join(bin, "claude.fish") + `"`,
+			func(script string) []string { return []string{"--no-config", "--private", "-c", script} }},
+	} {
+		path, err := exec.LookPath(shell.name)
+		if err != nil {
+			t.Logf("%s is not installed; skipping its entry point", shell.name)
+			continue
+		}
+		for host, tc := range entries {
+			t.Run(shell.name+"/"+host, func(t *testing.T) {
+				t.Parallel()
+				checkLaunch(t, bin, tc, path, shell.args(shell.source+"\n"+invoke[host]+"\n")...)
 			})
 		}
 	}
-	t.Run("claude-team-has-no-launcher", func(t *testing.T) {
-		argsPath := filepath.Join(t.TempDir(), "args")
-		cmd := exec.CommandContext(t.Context(), fish, "--no-config", "--private", "-c", `source "$RR_HELPER"; _rexurrect_claude claude-team`)
-		cmd.Env = []string{"HOME=" + root, "XDG_CONFIG_HOME=" + root, "PATH=" + bin + ":/usr/bin:/bin", "RR_HELPER=" + filepath.Join(pack, "shell", "_rexurrect_claude.fish"), "RR_ARGS_PATH=" + argsPath}
-		out, err := cmd.CombinedOutput()
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) || exit.ExitCode() != 2 {
-			t.Fatalf("claude-team launcher was accepted: %v: %s", err, out)
-		}
-		if _, err := os.Stat(argsPath); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("claude-team launch reached the executable: %v", err)
-		}
-	})
 }

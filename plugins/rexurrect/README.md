@@ -1,12 +1,15 @@
 # rexurrect agent plugin
 
 This package connects Codex and Claude Code lifecycle hooks to rexurrect's
-explicit receipt store. A fresh conversation records its own UUID and account
-wrapper; normal exit clears only the matching receipt. The package includes
-Fish helpers for reliable cleanup after the agent process returns.
+explicit receipt store. A fresh conversation records its own UUID and the
+command that launched it; a normal exit clears only the matching receipt.
+After a Rex restart, rexurrect types that command's `resume` form into the
+restored pane.
 
-The plugin needs an installed `rexurrect` with `receipt clear --harness` and
-`receipt set|clear --lock-timeout`, `rex`, and `jq` on the hook's PATH. Install
+The plugin needs an installed `rexurrect` whose `receipt set` accepts `--host`
+and `--command` (receipt store format 2), plus `rex` and `jq` on the hook's
+PATH.
+Interactive Codex needs `--no-daemon`, present since Codex CLI 0.163.0. Install
 and configure rexurrect's automatic job separately. The plugin does not install
 the binary, edit account configuration, or start or restart Rex.
 
@@ -15,14 +18,14 @@ the binary, edit account configuration, or start or restart Rex.
 The repository's `.claude-plugin/marketplace.json` is a shared catalog that
 Codex and Claude Code can load. Add it from GitHub in your own terminal:
 
-```fish
+```sh
 codex plugin marketplace add blacktop/rexurrect
 codex plugin add rexurrect@rexurrect
 ```
 
 For Claude Code, choose the installation scope you want:
 
-```fish
+```sh
 claude plugin marketplace add blacktop/rexurrect
 claude plugin install rexurrect@rexurrect --scope user
 ```
@@ -30,99 +33,108 @@ claude plugin install rexurrect@rexurrect --scope user
 For local development, replace `blacktop/rexurrect` in the marketplace command
 with the absolute path to your checkout.
 
-Use each account's existing command to install and enable the plugin in that
-account's configuration. Keep its current authentication and routing intact.
-In Codex, review the two plugin hook definitions with `/hooks` and trust them
-using that account's normal trust flow. Do not copy trust hashes or bypass hook
-trust. In Claude Code, review the enabled plugin and its hooks with `/plugin`
-and `/hooks`. Remove an older manually configured rexurrect receipt hook for
-that account when switching to the plugin, so the same event is not registered
-twice. Preserve unrelated hooks, including Rex's own integration.
+Hooks run only after you review them. In Codex, start `codex --no-daemon`
+and trust the two plugin hook definitions through `/hooks`; a TUI attached to
+the shared daemon does not list newly installed hooks. In Claude Code, review
+the enabled plugin and its hooks with `/plugin` and `/hooks`. Do not copy trust
+hashes or bypass hook trust. If you previously configured a manual rexurrect
+hook, remove only that entry so the same event is not registered twice, and
+keep Rex's own integration hooks.
 
-The portable manifest selects `hooks/codex.json` for Codex, and the Claude
-manifest selects `hooks/claude.json`. There is deliberately no default
-`hooks/hooks.json` to register the wrong host's handlers. OpenAI currently
-supports lifecycle hooks for manually installed plugins but excludes them from
-its public plugin directory; distribute this package through a local or repository
-marketplace until that policy changes.
+The `.codex-plugin/plugin.json` manifest selects `hooks/codex.json`, and the
+Claude manifest selects `hooks/claude.json`. There is deliberately no default
+`hooks/hooks.json`, which would register the wrong host's handlers. OpenAI
+currently supports lifecycle hooks for manually installed plugins but excludes
+them from its public plugin directory; distribute this package through a local
+or repository marketplace until that policy changes.
 
 ## Give the root agent explicit ownership
 
-An enabled plugin needs an exact account marker to know which command should
-be resumed. Hooks accept `RR_HARNESS=codex`, `codex-team`, `claude`, or
-`claude-ddb` for the corresponding host. A user-initiated `claude-team` session
-can record a receipt when its existing wrapper explicitly supplies that marker,
-but rexurrect never resumes it automatically and this package supplies no
-launcher for that account.
+A hook cannot tell which pane owns the conversation on its own, so the agent
+has to be started through a small launcher. `shell/rexurrect-launch` is a
+POSIX `sh` script that works from any shell. Install it on your PATH:
 
-The default server and state directory are:
+```sh
+install -m 0755 /path/to/rexurrect/plugins/rexurrect/shell/rexurrect-launch "$HOME/.local/bin/"
+```
+
+Then make `codex` and `claude` go through it. The function name is the
+harness: it is what rexurrect types after a restart, so it must resolve in
+your login shell.
+
+bash or zsh (`~/.bashrc` or `~/.zshrc`):
+
+```sh
+. /path/to/rexurrect/plugins/rexurrect/shell/rexurrect.sh
+```
+
+fish (autoloaded functions):
+
+```sh
+cp /path/to/rexurrect/plugins/rexurrect/shell/codex.fish "$HOME/.config/fish/functions/"
+cp /path/to/rexurrect/plugins/rexurrect/shell/claude.fish "$HOME/.config/fish/functions/"
+```
+
+Both files are one line per command: `rexurrect-launch codex codex "$@"` and
+`rexurrect-launch claude claude "$@"`. If you already wrap an agent in a
+function that sets up its environment, keep that setup and replace only the
+final launch with the matching `rexurrect-launch` line; pass the function's own
+name as the second argument. Do not `exec` it: the launcher must regain control
+to clear the receipt. Any bare command name works (letters, digits, `_`, `.`,
+`-`, at most 64 bytes); the first argument, the agent type, decides the resume
+syntax rexurrect types.
+
+What the launcher does:
+
+- Exports `RR_HOST` (the agent type) and `RR_HARNESS` (the command name) to
+  the agent so the hooks can prove which pane owns the conversation. Any
+  marker already present, even empty, means a launcher or agent session is
+  above this one; such launches, agent tool shells, and launches outside a Rex
+  pane run the agent directly with both markers blank.
+- Inside Rex, starts Codex with `--no-daemon`. The shared Codex app-server
+  daemon outlives a pane, runs hooks with its own environment, and does not end
+  a thread when the pane closes, so a daemon-attached session can never be
+  registered to its pane. An explicit `--no-daemon` is not duplicated, and
+  `codex agents`, `codex app-server`, and `codex remote-control` run unchanged
+  (with or without global options before them) because they exist to talk to
+  that daemon.
+- Records `--model`/`-m` and `--effort` or `-c model_reasoning_effort=` from
+  the arguments as defaults for the hook, because the hook payloads omit the
+  effort and Claude's may omit the model.
+- After the agent exits, clears the pane's receipt registered under this
+  command name with rexurrect's normal lock wait. The SessionEnd hook is a
+  best-effort first attempt under its host's short deadline; this is the
+  backstop.
+- Preserves the arguments, the environment, and the exit status. A failed
+  cleanup returns its own error instead of the agent's status.
+
+To launch an executable that is not the PATH `codex` or `claude`, set
+`REXURRECT_CODEX` or `REXURRECT_CLAUDE` in the function before calling the
+launcher. If rexurrect's automatic job uses a non-default endpoint or state
+directory, export `REXURRECT_SERVER` and `REXURRECT_STATE_DIR` there too. The
+defaults are:
 
 ```text
 unix://$HOME/Library/Application Support/rex/server.sock
 $HOME/Library/Application Support/rexurrect
 ```
 
-If your automatic job uses other locations, export `REXURRECT_SERVER` and
-`REXURRECT_STATE_DIR` in the account wrapper before its launch. These values
-must agree with the job. Do not set `RR_HARNESS` globally: it belongs to one
-foreground agent invocation.
-
-From your own Fish terminal, copy the two helpers from a stable checkout into
-Fish's autoload directory. `cp -n` keeps any existing implementation for you to
-review first:
-
-```fish
-set -l rr_plugin /absolute/path/to/rexurrect/plugins/rexurrect
-mkdir -p "$HOME/.config/fish/functions"
-cp -n "$rr_plugin/shell/_rexurrect_codex.fish" "$HOME/.config/fish/functions/"
-cp -n "$rr_plugin/shell/_rexurrect_claude.fish" "$HOME/.config/fish/functions/"
-```
-
-If either destination already exists, compare it with the packaged helper and
-merge or replace it after preserving any custom executable selection. Do this
-before continuing: the older resume-only helper does not supply the ownership
-marker required by this plugin. Reload the updated function or open a new Fish
-terminal before checking receipts.
-
-If `codex` and `claude` currently resolve only to executables, install the
-provided entry points too:
-
-```fish
-cp -n "$rr_plugin/shell/codex.fish" "$HOME/.config/fish/functions/"
-cp -n "$rr_plugin/shell/claude.fish" "$HOME/.config/fish/functions/"
-```
-
-The supplied helpers launch `codex` or `claude` from PATH. If an existing account
-function already uses that executable, retain its account setup and replace only
-the final launch. Use the matching line for that function:
-
-```fish
-_rexurrect_codex codex $argv
-_rexurrect_codex codex-team $argv
-_rexurrect_claude claude $argv
-_rexurrect_claude claude-ddb $argv
-```
-
-If a wrapper selects an absolute executable path or another launcher, adapt a
-copy of the corresponding helper to keep that exact target in both launch
-branches. Do not replace it with the PATH executable merely to use this package.
-
-Do not use `exec`: the helper must regain control for its cleanup attempt.
-Remove the older resume-only registration and cleanup from wrappers using the
-helper. Existing matching `RR_HARNESS` values are accepted; conflicting owners,
-agent tool shells, and nested helper calls launch with that marker empty and
-skip receipt cleanup. Arguments, account environment, and process exit status
-are preserved. A cleanup failure is reported instead of returning a successful
-exit status. Concurrent foreground wrappers in the same Rex block are not
+Do not set `RR_HOST` or `RR_HARNESS` globally: they belong to one foreground
+agent invocation. Concurrent foreground launches in the same Rex block are not
 supported.
 
-Codex registers startup, resume, clear, and fork events; compaction preserves
-the existing receipt. Claude also refreshes its receipt on compaction. Claude
-subagents and in-process teammates do not own the parent terminal's receipt.
-The Claude startup hook clears the ownership marker in future tool shells via
-`CLAUDE_ENV_FILE`. It records the model reported by Claude, falling back to the
-wrapper's `RR_MODEL`, and records the wrapper's `RR_EFFORT`. Explicit Claude
-`--model` and `--effort` arguments override those wrapper defaults. Codex's
+Foreground Codex sessions are not live tasks in the shared `codex agents`
+view. Closing the session ends its local process; its saved conversation can
+still be resumed by UUID. Codex refuses to reopen a thread that a running
+daemon still holds and asks you to close it in the other app first; quitting
+only the attached TUI can leave the thread open.
+
+Codex registers startup, resume, clear, and fork events; a resumed interactive
+thread may emit SessionStart only on its first turn, by which time restore has
+already rebound its receipt. Compaction preserves the existing receipt. Claude
+also refreshes its receipt on compaction. Claude subagents do not own the
+parent terminal's receipt, and the Claude startup hook clears the ownership
+markers in that session's tool shells through `CLAUDE_ENV_FILE`. Codex's
 payload supplies its model but no effort, so replay uses the account's effort
 default.
 
@@ -130,25 +142,20 @@ default.
 
 Run the packaged `setup` skill for a guided installation or the `status` skill
 for a read-only report. In a Rex pane, open a fresh conversation through the
-configured account wrapper. In another pane, list receipts with the same server
-and state directory as the automatic job:
+launcher. In another pane, list receipts with the same server and state
+directory as the automatic job:
 
-```fish
-set -l rr_server "unix://$HOME/Library/Application Support/rex/server.sock"
-set -l rr_state "$HOME/Library/Application Support/rexurrect"
-rexurrect receipt list --server "$rr_server" --state-dir "$rr_state" --json
+```sh
+rexurrect receipt list --server "unix://$HOME/Library/Application Support/rex/server.sock" --state-dir "$HOME/Library/Application Support/rexurrect" --json
 ```
 
-Check the Rex block, exact harness, and conversation UUID. After a normal exit,
-the matching receipt must disappear. Check that nested agent commands preserve
-the enclosing receipt. A final recovery check requires a user-authorized Rex
-restart and verification of the actual resumed conversations. A complete layout
-journal alone does not establish successful agent login or resumption. Never
-run `rexurrect restore` against an active live server as a plugin setup test.
-
-The short SessionEnd hook is a best-effort first cleanup attempt. The Fish
-helper retries cleanup after the process exits, with rexurrect's normal lock
-wait. Launches outside the helper lack that backstop.
+Check the Rex block, host, command, and conversation UUID. After a normal exit, the
+matching receipt must disappear. Check that a nested agent command preserves
+the enclosing receipt. A final recovery check requires a Rex restart that you
+start yourself, followed by verification of the actual resumed conversations.
+A complete layout journal alone does not establish successful agent login or
+resumption. Never run `rexurrect restore` against an active live server as a
+plugin setup test.
 
 ## Validate without installing
 
@@ -172,6 +179,6 @@ codex -c 'marketplaces.rexurrect.source_type="local"' -c 'marketplaces.rexurrect
 
 - [OpenAI plugin package format](https://developers.openai.com/plugins/build/plugins)
 - [Codex lifecycle hooks](https://learn.chatgpt.com/docs/hooks)
+- [Codex CLI reference](https://learn.chatgpt.com/docs/cli/reference)
 - [Claude plugin manifest](https://code.claude.com/docs/en/plugins/manifest-reference)
 - [Claude lifecycle hooks](https://code.claude.com/docs/en/hooks)
-- [Portable Agent Plugins specification](https://agent-plugins.org/specification)

@@ -1,3 +1,3 @@
-function codex -d 'Run Codex with Rex receipt hooks'
-    _rexurrect_codex codex $argv
+function codex -d 'Run Codex with rexurrect receipt ownership'
+    rexurrect-launch codex codex $argv
 end

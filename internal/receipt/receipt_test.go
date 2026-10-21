@@ -5,45 +5,91 @@ import (
 	"testing"
 )
 
-func validReceipt() Receipt {
-	return Receipt{SessionID: "session:01234567-89ab-4cde-8fab-0123456789ab", BlockID: "block:01234567-89ab-4cde-8fab-0123456789ab", Harness: "claude", Conversation: "01234567-89ab-4cde-8fab-0123456789ab", Model: "model-1.2", Effort: "high"}
+const (
+	testSession      = "session:01234567-89ab-4cde-8fab-0123456789ab"
+	testBlock        = "block:01234567-89ab-4cde-8fab-0123456789ab"
+	testConversation = "01234567-89ab-4cde-8fab-0123456789ab"
+)
+
+func commandReceipt(host, command string) Receipt {
+	return Receipt{SessionID: testSession, BlockID: testBlock, Host: host, Command: command,
+		Conversation: testConversation, Model: "model-1.2", Effort: "high"}
 }
 
-func TestInitialInput(t *testing.T) {
-	for _, harness := range []string{"claude", "claude-ddb", "codex", "codex-team", "claude-team", "unknown"} {
-		r := validReceipt()
-		r.Harness = harness
+func legacyReceipt(harness string) Receipt {
+	return Receipt{SessionID: testSession, BlockID: testBlock, Harness: harness,
+		Conversation: testConversation, Model: "model-1.2", Effort: "high"}
+}
+
+func wantInput(host, name string, optional bool) string {
+	var want string
+	switch host {
+	case "claude":
+		want = name + " --resume " + testConversation
+		if optional {
+			want += " --model model-1.2 --effort high"
+		}
+	case "codex":
+		want = name + " resume " + testConversation
+		if optional {
+			want += ` -m model-1.2 -c model_reasoning_effort="high"`
+		}
+	default:
+		return ""
+	}
+	return want + "\n"
+}
+
+func TestInitialInputByHost(t *testing.T) {
+	for _, tc := range []struct{ host, command string }{
+		{"claude", "claude"}, {"claude", "claude-work"}, {"claude", "my_claude.v2"},
+		{"codex", "codex"}, {"codex", "codex-work"}, {"codex", "Codex_Team"},
+	} {
 		for _, optional := range []bool{false, true} {
+			r := commandReceipt(tc.host, tc.command)
 			if !optional {
 				r.Model, r.Effort = "", ""
-			} else {
-				r.Model, r.Effort = "model-1.2", "high"
 			}
-			var want string
-			switch harness {
-			case "claude", "claude-ddb":
-				want = harness + " --resume " + r.Conversation
-				if optional {
-					want += " --model model-1.2 --effort high"
-				}
-			case "codex", "codex-team":
-				want = harness + " resume " + r.Conversation
-				if optional {
-					want += ` -m model-1.2 -c model_reasoning_effort="high"`
-				}
-			}
-			if want != "" {
-				want += "\n"
-			}
-			if got := r.InitialInput(); got != want {
-				t.Errorf("%s optional=%t: %q, want %q", harness, optional, got, want)
+			if got, want := r.InitialInput(), wantInput(tc.host, tc.command, optional); got != want {
+				t.Errorf("%s %s optional=%t: %q, want %q", tc.host, tc.command, optional, got, want)
 			}
 		}
 	}
 }
 
+func TestInitialInputRejectsShellKeywords(t *testing.T) {
+	for _, name := range []string{"if", "while", "function", "command", "exec", "_", "begin", "end", "and", "or", "not", "coproc", "foreach", "repeat", "nocorrect", "typeset"} {
+		r := commandReceipt("codex", name)
+		if r.Validate() == nil || r.InitialInput() != "" {
+			t.Errorf("accepted shell keyword %q", name)
+		}
+	}
+}
+
+// Legacy receipts keep the exact decisions store format 1 made.
+func TestLegacyInitialInput(t *testing.T) {
+	for harness, host := range map[string]string{
+		"claude": "claude", "claude-ddb": "claude", "codex": "codex", "codex-team": "codex",
+		"claude-team": "", "unknown": "", "future-agent": "",
+	} {
+		r := legacyReceipt(harness)
+		if err := r.ValidateMetadata(); err != nil {
+			t.Fatalf("%s metadata: %v", harness, err)
+		}
+		if (r.Validate() == nil) != legacyHarness(harness) {
+			t.Errorf("%s: allowlist decision changed: %v", harness, r.Validate())
+		}
+		if got, want := r.InitialInput(), wantInput(host, harness, true); got != want {
+			t.Errorf("%s: %q, want %q", harness, got, want)
+		}
+		if r.Name() != harness || !r.Legacy() {
+			t.Errorf("%s: name/legacy accessors", harness)
+		}
+	}
+}
+
 func TestRejectInvalidReceipts(t *testing.T) {
-	valid := validReceipt()
+	valid := commandReceipt("codex", "codex")
 	for _, effort := range []string{"", "low", "medium", "high", "xhigh"} {
 		r := valid
 		r.Effort = effort
@@ -51,8 +97,10 @@ func TestRejectInvalidReceipts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, value := range []string{"", "bad", "../claude", "CLAUDE", "claude;id", "$(id)", "`id`", "a b", "a\nb", "a\r", "a\x00b", "'", `"`, "a/b", "a\\b", strings.Repeat("a", 129)} {
-		for _, field := range []string{"session", "block", "harness", "conversation", "model", "effort"} {
+	values := []string{"", "bad", "../claude", "CLAUDE", "claude;id", "$(id)", "`id`", "a b", "a\nb",
+		"a\r", "a\x00b", "'", `"`, "a/b", "a\\b", "-codex", "--resume", strings.Repeat("a", 129)}
+	for _, value := range values {
+		for _, field := range []string{"session", "block", "host", "command", "conversation", "model", "effort"} {
 			if value == "" && (field == "model" || field == "effort") {
 				continue
 			}
@@ -62,8 +110,10 @@ func TestRejectInvalidReceipts(t *testing.T) {
 				r.SessionID = value
 			case "block":
 				r.BlockID = value
-			case "harness":
-				r.Harness = value
+			case "host":
+				r.Host = value
+			case "command":
+				r.Command = value
 			case "conversation":
 				r.Conversation = value
 			case "model":
@@ -71,8 +121,8 @@ func TestRejectInvalidReceipts(t *testing.T) {
 			case "effort":
 				r.Effort = value
 			}
-			// "bad" is a valid model token.
-			if field == "model" && (value == "bad") {
+			// "bad" is a valid model token; command names may also be uppercase.
+			if value == "bad" && field == "model" || (value == "bad" || value == "CLAUDE") && field == "command" {
 				continue
 			}
 			if r.Validate() == nil || r.InitialInput() != "" {
@@ -80,23 +130,49 @@ func TestRejectInvalidReceipts(t *testing.T) {
 			}
 		}
 	}
+	if r := commandReceipt("codex", strings.Repeat("a", 64)); r.Validate() != nil {
+		t.Error("rejected a 64-byte command name")
+	}
+	if r := commandReceipt("codex", strings.Repeat("a", 65)); r.Validate() == nil {
+		t.Error("accepted a 65-byte command name")
+	}
+}
+
+// Mixed or half-formed receipts are rejected in both validators, so neither a
+// store nor a snapshot can smuggle one form's name into the other's syntax.
+func TestRejectMixedForms(t *testing.T) {
+	mixed := commandReceipt("codex", "codex")
+	mixed.Harness = "codex"
+	hostOnly := commandReceipt("codex", "")
+	commandOnly := commandReceipt("", "codex")
+	for name, r := range map[string]Receipt{"mixed": mixed, "host-only": hostOnly, "command-only": commandOnly, "empty": {SessionID: testSession, BlockID: testBlock, Conversation: testConversation}} {
+		if r.ValidateMetadata() == nil || r.Validate() == nil || r.InitialInput() != "" {
+			t.Errorf("accepted %s receipt", name)
+		}
+	}
+	legacy := legacyReceipt("codex")
+	legacy.Harness = strings.Repeat("a", 129)
+	if legacy.ValidateMetadata() == nil {
+		t.Error("accepted an oversized legacy harness")
+	}
 }
 
 func TestClearGuard(t *testing.T) {
-	r := Receipt{Harness: "codex", Conversation: "01234567-89ab-4cde-8fab-0123456789ab"}
+	r := commandReceipt("codex", "codex-work")
+	legacy := legacyReceipt("codex")
 	for _, tc := range []struct {
 		guard ClearGuard
 		match bool
 	}{
 		{ClearGuard{}, true},
-		{ClearGuard{Harness: "codex"}, true},
-		{ClearGuard{Harness: "codex-team"}, false},
+		{ClearGuard{Command: "codex-work"}, true},
+		{ClearGuard{Command: "codex"}, false},
 		{ClearGuard{Conversation: r.Conversation}, true},
-		{ClearGuard{Conversation: "01234567-89AB-4CDE-8FAB-0123456789AB"}, true},
+		{ClearGuard{Conversation: strings.ToUpper(r.Conversation)}, true},
 		{ClearGuard{Conversation: "00000000-0000-0000-0000-000000000000"}, false},
-		{ClearGuard{Harness: "codex", Conversation: r.Conversation}, true},
-		{ClearGuard{Harness: "codex", Conversation: "00000000-0000-0000-0000-000000000000"}, false},
-		{ClearGuard{Harness: "codex-team", Conversation: r.Conversation}, false},
+		{ClearGuard{Command: "codex-work", Conversation: r.Conversation}, true},
+		{ClearGuard{Command: "codex-work", Conversation: "00000000-0000-0000-0000-000000000000"}, false},
+		{ClearGuard{Command: "codex", Conversation: r.Conversation}, false},
 	} {
 		if err := tc.guard.Validate(); err != nil {
 			t.Fatalf("guard %+v: %v", tc.guard, err)
@@ -105,13 +181,11 @@ func TestClearGuard(t *testing.T) {
 			t.Errorf("guard %+v matches=%v, want %v", tc.guard, got, tc.match)
 		}
 	}
-	for _, bad := range []ClearGuard{
-		{Harness: "zsh"},
-		{Harness: "codex;id"},
-		{Harness: "Codex"},
-		{Conversation: "not-a-uuid"},
-		{Harness: "codex", Conversation: "thr_123"},
-	} {
+	// A launcher clears a legacy receipt registered under the same command name.
+	if !(ClearGuard{Command: "codex"}).Matches(legacy) || (ClearGuard{Command: "codex-work"}).Matches(legacy) {
+		t.Error("command guard does not match legacy receipts by name")
+	}
+	for _, bad := range []ClearGuard{{Command: "-codex"}, {Command: "codex;id"}, {Command: "a b"}, {Conversation: "not-a-uuid"}, {Command: "codex", Conversation: "thr_123"}} {
 		if err := bad.Validate(); err == nil {
 			t.Errorf("accepted guard %+v", bad)
 		}

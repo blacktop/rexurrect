@@ -18,8 +18,8 @@ Run these read-only commands with the selected endpoint and state directory:
 Use real argument values in place of `ENDPOINT` and `DIRECTORY`; preserve paths
 with spaces as separate quoted arguments. Report whether the automatic job is
 installed and loaded, which snapshot is current, and which relevant Rex blocks
-have a registered harness and conversation. Highlight missing receipts,
-unsupported harnesses, failed cleanup, or mismatches with the account the user
+have a registered host, command, and conversation. Highlight missing receipts,
+inert legacy entries, failed cleanup, or mismatches with the account the user
 expected. Do not expose unrelated private conversation identifiers in a broad
 status summary.
 

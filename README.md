@@ -14,7 +14,7 @@ ordinary shells. Arbitrary running commands and scrollback aren't restored.
 
 With Rex running on macOS:
 
-```fish
+```sh
 brew install --cask blacktop/tap/rexurrect
 rexurrect agent install --server "unix://$HOME/Library/Application Support/rex/server.sock" --state-dir "$HOME/Library/Application Support/rexurrect"
 rexurrect agent status
@@ -37,14 +37,14 @@ you use.
 
 For Codex:
 
-```fish
+```sh
 codex plugin marketplace add blacktop/rexurrect
 codex plugin add rexurrect@rexurrect
 ```
 
 For Claude Code:
 
-```fish
+```sh
 claude plugin marketplace add blacktop/rexurrect
 claude plugin install rexurrect@rexurrect --scope user
 ```
@@ -52,7 +52,8 @@ claude plugin install rexurrect@rexurrect --scope user
 Finish the [wrapper and hook setup](plugins/rexurrect/README.md#give-the-root-agent-explicit-ownership),
 then follow the [receipt checks](plugins/rexurrect/README.md#check-the-result).
 The wrapper identifies which account owns the pane, so installing the plugin
-alone isn't enough. `claude-team` always stays manual.
+alone isn't enough. Codex runs with `--no-daemon` inside Rex so its hooks follow
+the pane's lifetime.
 
 ## Usage
 

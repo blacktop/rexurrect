@@ -14,6 +14,9 @@ import (
 const (
 	MaxReceipts     = 1024
 	MaxReceiptsSize = 512 << 10
+	// ReceiptFormatVersion 2 added the host and command form. Format 1 files
+	// are still read; they can only hold legacy harness receipts.
+	ReceiptFormatVersion = 2
 )
 
 type receiptFile struct {
@@ -48,8 +51,15 @@ func (s *Store) LoadReceipts(host string) ([]receipt.Receipt, error) {
 		}
 		return nil, err
 	}
-	if f.FormatVersion != FormatVersion || f.HostID != host || f.Receipts == nil {
+	if f.FormatVersion < 1 || f.FormatVersion > ReceiptFormatVersion || f.HostID != host || f.Receipts == nil {
 		return nil, errors.New("invalid receipt store binding")
+	}
+	if f.FormatVersion < ReceiptFormatVersion {
+		for _, r := range f.Receipts {
+			if !r.Legacy() {
+				return nil, errors.New("receipt store format 1 cannot hold host and command receipts")
+			}
+		}
 	}
 	return f.Receipts, validateReceipts(host, f.Receipts)
 }
@@ -65,7 +75,7 @@ func (s *Store) WriteReceipts(host string, entries []receipt.Receipt) error {
 		}
 		return strings.Compare(a.BlockID, b.BlockID)
 	})
-	f := receiptFile{FormatVersion: FormatVersion, HostID: host, Receipts: entries}
+	f := receiptFile{FormatVersion: ReceiptFormatVersion, HostID: host, Receipts: entries}
 	data, err := json.Marshal(f)
 	if err != nil {
 		return err

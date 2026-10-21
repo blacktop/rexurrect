@@ -20,6 +20,14 @@ import (
 	"github.com/blacktop/rexurrect/internal/state"
 )
 
+// commandReceipt is the host and command form that `receipt set` registers.
+func commandReceipt(n int, host, command string) receipt.Receipt {
+	r := agentReceipt(n, "")
+	r.Host, r.Command = host, command
+	return r
+}
+
+// agentReceipt is the legacy harness form that older stores and snapshots hold.
 func agentReceipt(n int, harness string) receipt.Receipt {
 	return receipt.Receipt{SessionID: "session:01234567-89ab-4cde-8fab-0123456789ab", BlockID: fmt.Sprintf("block:01234567-89ab-4cde-8fab-%012x", n), Harness: harness, Conversation: fmt.Sprintf("01234567-89ab-4cde-8fab-%012x", n), Model: "model-1.2", Effort: "high"}
 }
@@ -38,7 +46,7 @@ func TestReceiptHooksWaitForStateLock(t *testing.T) {
 	if DefaultLockTimeout < 10*time.Second {
 		t.Fatal("receipt lock wait is too short")
 	}
-	r := agentReceipt(1, "codex")
+	r := commandReceipt(1, "codex", "codex")
 	c := scriptClient(t, `
 case "$6:$8" in
   whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"instance","rex_version":"version"}' ;;
@@ -60,7 +68,7 @@ esac
 			}()
 			args := []string{"receipt", action, "--server", "unix://" + c.Socket, "--state-dir", dir, "--rex", c.Binary, "--session", r.SessionID, "--block", r.BlockID, "--conversation", r.Conversation}
 			if action == "set" {
-				args = append(args, "--harness", r.Harness)
+				args = append(args, "--host", r.Host, "--command", r.Command)
 			}
 			started := time.Now()
 			out, err := exec.CommandContext(t.Context(), binary, args...).CombinedOutput()
@@ -94,7 +102,7 @@ esac
 }
 
 func TestReceiptLockTimeoutFlagBoundsWait(t *testing.T) {
-	r := agentReceipt(1, "codex")
+	r := commandReceipt(1, "codex", "codex")
 	c := scriptClient(t, `
 case "$6:$8" in
   whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"instance","rex_version":"version"}' ;;
@@ -115,7 +123,10 @@ esac
 				"receipt", action, "--server", "unix://" + c.Socket, "--state-dir", dir,
 				"--rex", c.Binary, "--lock-timeout", "300ms",
 				"--session", r.SessionID, "--block", r.BlockID,
-				"--conversation", r.Conversation, "--harness", r.Harness,
+				"--conversation", r.Conversation, "--command", r.Command,
+			}
+			if action == "set" {
+				args = append(args, "--host", r.Host)
 			}
 			started := time.Now()
 			out, err := exec.CommandContext(t.Context(), binary, args...).CombinedOutput()
@@ -301,23 +312,26 @@ func TestAgentResumeRoundTrip(t *testing.T) {
 			if err := os.MkdirAll(dir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			for _, harness := range []string{"claude", "claude-ddb", "codex", "codex-team", "claude-team", "future-agent"} {
+			// Custom command names register through the real receipt CLI with an
+			// explicit host. Legacy-only names never get a live function that
+			// registers; a typed command for them would be a test failure.
+			for name, host := range map[string]string{"claude-work": "claude", "codex-work": "codex", "claude-team": "", "future-agent": ""} {
 				body := fmt.Sprintf(`function %[1]s
     set -l rr_id $argv[2]
     set -l rr_effort (string replace 'model_reasoning_effort=' '' -- $argv[6])
-    '%[2]s' receipt set --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --harness %[1]s --conversation "$rr_id" --model "$argv[4]" --effort "$rr_effort"
+    '%[2]s' receipt set --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --host %[8]s --command %[1]s --conversation "$rr_id" --model "$argv[4]" --effort "$rr_effort"
     or return
     printf '%%s\t%%s\t%%s\t%%s\n' "$REX_SESSION" "$REX_BLOCK" (pwd -P) (string join \t -- %[1]s $argv) >> '%[6]s'
     read -l rr_wait; or return
-    '%[2]s' receipt clear --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --conversation "$rr_id"
+    '%[2]s' receipt clear --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --command %[1]s --conversation "$rr_id"
     or return
     printf '%%s\n' "$REX_BLOCK" >> '%[7]s'
 end
-`, harness, binary, s.client.Socket, filepath.Join(s.root, "saved"), s.client.Binary, marker, exited)
-				if harness == "future-agent" {
-					body = fmt.Sprintf("function future-agent\n    printf 'unexpected future-agent\\n' >> '%s'\nend\n", marker)
+`, name, binary, s.client.Socket, filepath.Join(s.root, "saved"), s.client.Binary, marker, exited, host)
+				if host == "" {
+					body = fmt.Sprintf("function %[1]s\n    printf 'unexpected %[1]s\\n' >> '%[2]s'\nend\n", name, marker)
 				}
-				if err := os.WriteFile(filepath.Join(dir, harness+".fish"), []byte(body), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, name+".fish"), []byte(body), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -363,11 +377,14 @@ end
 	if err := os.Mkdir(cwd, 0700); err != nil {
 		t.Fatal(err)
 	}
-	harnesses := []string{"claude-ddb", "codex-team", "claude-team", "future-agent"}
+	// Two live command-form registrations, one legacy inert receipt
+	// (claude-team never resumed under store format 1 and must stay that
+	// way), and one legacy receipt crafted to an unknown future name.
+	harnesses := []string{"claude-work", "codex-work", "claude-team", "future-agent"}
 	sourceArgs := [][]string{
-		{"claude-ddb", "--resume", agentReceipt(1, "claude-ddb").Conversation, "--model", "model-1.2", "--effort", "high"},
-		{"codex-team", "resume", agentReceipt(2, "codex-team").Conversation, "-m", "model-1.2", "-c", "model_reasoning_effort=high"},
-		{"claude-team", "--resume", agentReceipt(3, "claude-team").Conversation, "--model", "claude-mythos-5-1", "--effort", "high"},
+		{"claude-work", "--resume", agentReceipt(1, "").Conversation, "--model", "model-1.2", "--effort", "high"},
+		{"codex-work", "resume", agentReceipt(2, "").Conversation, "-m", "model-1.2", "-c", "model_reasoning_effort=high"},
+		nil,
 		nil,
 	}
 	windows := make([]createWindow, 0, len(harnesses))
@@ -391,9 +408,15 @@ end
 		}
 		block := created.Windows[i].Blocks[0]
 		waitDefaultTerminal(t, s.client, created.ID, block, cwd)
-		if h == "future-agent" {
-			// Simulate a generation produced by a future harness-aware writer.
-			r := agentReceipt(i+1, "codex")
+		if len(sourceArgs[i]) == 0 {
+			// Legacy receipts are registered through the Go store API, as an
+			// older binary would have written them; "codex" is crafted into an
+			// unknown future name below.
+			legacy := "claude-team"
+			if h == "future-agent" {
+				legacy = "codex"
+			}
+			r := agentReceipt(i+1, legacy)
 			r.SessionID, r.BlockID = string(created.ID), string(block)
 			if err := s.client.SetReceipt(t.Context(), dir, r); err != nil {
 				t.Fatal(err)
@@ -463,9 +486,9 @@ end
 	}
 	var want []string
 	for i, h := range harnesses[:2] {
-		r := agentReceipt(i+1, h)
+		r := agentReceipt(i+1, "")
 		args := []string{h, "--resume", r.Conversation, "--model", r.Model, "--effort", r.Effort}
-		if h == "codex-team" {
+		if h == "codex-work" {
 			args = []string{h, "resume", r.Conversation, "-m", r.Model, "-c", "model_reasoning_effort=" + r.Effort}
 		}
 		want = append(want, strings.Join(append([]string{string(result.IDMap[snapshot.SourceID(created.ID)]), string(result.IDMap[snapshot.SourceID(created.Windows[i].Blocks[0])]), cwd}, args...), "\t"))
@@ -515,7 +538,7 @@ end
 	if again, err := s.client.RestoreSaved(t.Context(), dir, saved.Generation); err != nil || !reflect.DeepEqual(again, result) || !reflect.DeepEqual(beforeFiles, savedFiles(t, dir)) || !reflect.DeepEqual(before, readMarker()) {
 		t.Fatalf("completed restore re-registered an exited agent: %+v %v", again, err)
 	}
-	t.Logf("resumed and cleared two conversations; claude-team and future-agent received no input; compared %d ID mappings", len(result.IDMap))
+	t.Logf("resumed and cleared two custom-command conversations; legacy claude-team and future-agent received no input; compared %d ID mappings", len(result.IDMap))
 }
 
 func TestReceiptRejectsBeforeRex(t *testing.T) {

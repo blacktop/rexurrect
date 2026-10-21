@@ -12,7 +12,8 @@ import (
 	"github.com/blacktop/rexurrect/internal/receipt"
 )
 
-const Version = 2
+// Version 2 added agent receipts; version 3 added their host and command form.
+const Version = 3
 
 type SourceID string
 type LiveID string
@@ -105,7 +106,7 @@ func (s Session) Blocks() []*Block {
 // Inventory validates structure and references, including IDs of split edges.
 // Its resource bounds also make subsequent recursive walks safe.
 func (s Snapshot) Inventory() (map[SourceID]string, error) {
-	if (s.Version != 1 && s.Version != Version) || len(s.Sessions) > 64 {
+	if s.Version < 1 || s.Version > Version || len(s.Sessions) > 64 {
 		return nil, fmt.Errorf("unsupported snapshot version or session count")
 	}
 	ids := make(map[SourceID]string)
@@ -145,6 +146,9 @@ func (s Snapshot) Inventory() (map[SourceID]string, error) {
 					if r := b.AgentResume; r != nil {
 						if s.Version < 2 {
 							return fmt.Errorf("agent receipts require snapshot version 2")
+						}
+						if !r.Legacy() && s.Version < 3 {
+							return fmt.Errorf("host and command receipts require snapshot version 3")
 						}
 						if err := r.ValidateMetadata(); err != nil || r.SessionID != string(session.ID) || r.BlockID != string(b.ID) {
 							return fmt.Errorf("invalid agent receipt for block %s: %v", b.ID, err)

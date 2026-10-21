@@ -30,7 +30,7 @@ func TestStateRejectsDuplicateJSONMembers(t *testing.T) {
 		valid        []byte
 		load         func() error
 	}{
-		{"receipts.json", `"model":"model-1"`, encoded(t, receiptFile{FormatVersion: FormatVersion, HostID: e.HostID, Receipts: []receipt.Receipt{stateReceipt(1)}}), func() error { _, err := s.LoadReceipts(e.HostID); return err }},
+		{"receipts.json", `"model":"model-1"`, encoded(t, receiptFile{FormatVersion: ReceiptFormatVersion, HostID: e.HostID, Receipts: []receipt.Receipt{stateReceipt(1)}}), func() error { _, err := s.LoadReceipts(e.HostID); return err }},
 		{generationName(e.Generation), `"source_id":"session"`, encoded(t, e), func() error { _, err := s.LoadCurrent(); return err }},
 		{journalName(j.Generation, j.HostID, j.InstanceID), `"outcome":"intent"`, encoded(t, j), func() error { _, err := s.LoadJournal(e, e.HostID, e.InstanceID); return err }},
 		{"current.json", `"generation":1`, encoded(t, pointer{Generation: 1}), func() error { _, err := s.LoadCurrent(); return err }},

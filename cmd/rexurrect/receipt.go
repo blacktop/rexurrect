@@ -29,6 +29,7 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	lockTimeout := rex.DefaultLockTimeout
 	var r receipt.Receipt
 	var guard receipt.ClearGuard
+	var legacyGuard string
 	var jsonOutput bool
 	flags.StringVar(&r.SessionID, "session", "", "full Rex session ID (optional filter for list)")
 	flags.StringVar(&r.BlockID, "block", "", "full Rex block ID (optional filter for list)")
@@ -37,14 +38,17 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 	if action == "set" {
 		flags.StringVar(&r.Conversation, "conversation", "", "conversation UUID")
-		flags.StringVar(&r.Harness, "harness", "", "claude, claude-ddb, codex, codex-team, or claude-team")
+		flags.StringVar(&r.Host, "host", "", "agent type: codex or claude")
+		flags.StringVar(&r.Command, "command", "", "command name typed to resume, at most 64 bytes")
+		flags.StringVar(&r.Harness, "harness", "", "legacy receipt name; use --host and --command")
 		flags.StringVar(&r.Model, "model", "", "optional model token")
 		flags.StringVar(&r.Effort, "effort", "", "optional low, medium, high, or xhigh")
 	}
 	if action == "clear" {
 		flags.StringVar(&guard.Conversation, "conversation", "", "optional conversation UUID guard")
-		flags.StringVar(&guard.Harness, "harness", "",
-			"optional harness guard; with --conversation both must match")
+		flags.StringVar(&guard.Command, "command", "",
+			"optional command name guard; with --conversation both must match")
+		flags.StringVar(&legacyGuard, "harness", "", "legacy alias for --command")
 	}
 	if action == "list" {
 		flags.BoolVar(&jsonOutput, "json", false, "print a JSON array")
@@ -54,6 +58,12 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 			return nil
 		}
 		return err
+	}
+	if legacyGuard != "" {
+		if guard.Command != "" && guard.Command != legacyGuard {
+			return errors.New("--harness and --command guards must match")
+		}
+		guard.Command = legacyGuard
 	}
 	socket, err := rex.SocketPath(*server)
 	if err != nil {
@@ -99,7 +109,12 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 			return json.NewEncoder(stdout).Encode(filtered)
 		}
 		for _, entry := range filtered {
-			if _, err := fmt.Fprintf(stdout, "%s %s %s %s model=%s effort=%s\n", entry.SessionID, entry.BlockID, entry.Harness, entry.Conversation, entry.Model, entry.Effort); err != nil {
+			host := entry.Host
+			if entry.Legacy() {
+				host = "legacy"
+			}
+			if _, err := fmt.Fprintf(stdout, "%s %s %s %s %s model=%s effort=%s\n", entry.SessionID, entry.BlockID,
+				host, entry.Name(), entry.Conversation, entry.Model, entry.Effort); err != nil {
 				return err
 			}
 		}

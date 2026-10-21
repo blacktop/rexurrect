@@ -1,6 +1,6 @@
 {
   "name": "rexurrect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Register and inspect explicit agent receipts for Rex session recovery.",
   "author": { "name": "blacktop", "url": "https://github.com/blacktop" },
   "homepage": "https://github.com/blacktop/rexurrect",

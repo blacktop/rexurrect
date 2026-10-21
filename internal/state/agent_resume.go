@@ -14,7 +14,7 @@ func agentNotResumed(session snapshot.Session) []AgentNotResumed {
 	var out []AgentNotResumed
 	for _, b := range session.Blocks() {
 		if r := b.AgentResume; r != nil && r.InitialInput() == "" {
-			out = append(out, AgentNotResumed{BlockID: b.ID, Harness: r.Harness, Reason: "automatic resume disabled"})
+			out = append(out, AgentNotResumed{BlockID: b.ID, Harness: r.Name(), Reason: "automatic resume disabled"})
 		}
 	}
 	return out

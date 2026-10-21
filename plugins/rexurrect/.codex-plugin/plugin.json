@@ -1,13 +1,20 @@
 {
   "name": "rexurrect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Register and inspect explicit agent receipts for Rex session recovery.",
   "author": { "name": "blacktop", "url": "https://github.com/blacktop" },
   "homepage": "https://github.com/blacktop/rexurrect",
   "repository": "https://github.com/blacktop/rexurrect",
   "license": "MIT",
   "keywords": ["rex", "recovery", "sessions", "persistence"],
+  "skills": "./skills/",
   "hooks": "./hooks/codex.json",
+  "interface": {
+    "displayName": "rexurrect",
+    "shortDescription": "Resume agent conversations after a Rex restart",
+    "developerName": "blacktop",
+    "category": "Productivity"
+  },
   "extensions": {
     "com.openai": {
       "onboardingSkill": "./skills/setup/SKILL.md"

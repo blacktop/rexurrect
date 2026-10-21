@@ -120,9 +120,9 @@ func TestReceiptStore(t *testing.T) {
 		t.Fatal("rejection changed store")
 	}
 	for _, miss := range []receipt.ClearGuard{
-		{Harness: "codex"},
-		{Harness: "codex", Conversation: r.Conversation},
-		{Harness: r.Harness, Conversation: "00000000-0000-0000-0000-000000000000"},
+		{Command: "codex"},
+		{Command: "codex", Conversation: r.Conversation},
+		{Command: r.Harness, Conversation: "00000000-0000-0000-0000-000000000000"},
 	} {
 		if err := s.ClearReceipt("host", r.Key, miss); err != nil {
 			t.Fatal(err)
@@ -131,10 +131,10 @@ func TestReceiptStore(t *testing.T) {
 			t.Fatalf("guard %+v changed store", miss)
 		}
 	}
-	if err := s.ClearReceipt("host", r.Key, receipt.ClearGuard{Harness: "zsh"}); err == nil {
-		t.Fatal("accepted invalid harness guard")
+	if err := s.ClearReceipt("host", r.Key, receipt.ClearGuard{Command: "-zsh"}); err == nil {
+		t.Fatal("accepted invalid command guard")
 	}
-	exact := receipt.ClearGuard{Harness: r.Harness, Conversation: r.Conversation}
+	exact := receipt.ClearGuard{Command: r.Harness, Conversation: r.Conversation}
 	if err := s.ClearReceipt("host", r.Key, exact); err != nil {
 		t.Fatal(err)
 	}
@@ -152,5 +152,108 @@ func TestReceiptStore(t *testing.T) {
 	var decoded map[string]any
 	if err := json.Unmarshal(before, &decoded); err != nil || len(decoded) != 3 {
 		t.Fatalf("store schema: %s %v", before, err)
+	}
+}
+
+func commandStateReceipt(n int) receipt.Receipt {
+	r := stateReceipt(n)
+	r.Harness, r.Host, r.Command = "", "codex", "codex-work"
+	return r
+}
+
+// Store format 1 is readable but may only hold legacy receipts; every write
+// produces format 2, which may hold both forms side by side.
+func TestReceiptStoreFormats(t *testing.T) {
+	s := openStore(t)
+	legacy, modern := stateReceipt(1), commandStateReceipt(2)
+	path := filepath.Join(s.dir, "receipts.json")
+	writeFile := func(f receiptFile) {
+		t.Helper()
+		data, err := json.Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(receiptFile{FormatVersion: 1, HostID: "host", Receipts: []receipt.Receipt{legacy}})
+	if got, err := s.LoadReceipts("host"); err != nil || !reflect.DeepEqual(got, []receipt.Receipt{legacy}) {
+		t.Fatalf("format 1 load: %+v %v", got, err)
+	}
+	if err := s.SetReceipt("host", modern); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), `"format_version":2`) {
+		t.Fatalf("store was not rewritten as format 2: %s %v", data, err)
+	}
+	if got, err := s.LoadReceipts("host"); err != nil || !reflect.DeepEqual(got, []receipt.Receipt{legacy, modern}) {
+		t.Fatalf("mixed store load: %+v %v", got, err)
+	}
+	if legacy.InitialInput() == "" || modern.InitialInput() == "" {
+		t.Fatal("stored receipts lost their replay")
+	}
+	for name, f := range map[string]receiptFile{
+		"format-1-with-command-form": {FormatVersion: 1, HostID: "host", Receipts: []receipt.Receipt{modern}},
+		"format-3":                   {FormatVersion: 3, HostID: "host", Receipts: []receipt.Receipt{modern}},
+		"format-0":                   {FormatVersion: 0, HostID: "host", Receipts: []receipt.Receipt{legacy}},
+	} {
+		writeFile(f)
+		if _, err := s.LoadReceipts("host"); err == nil {
+			t.Fatalf("accepted %s store", name)
+		}
+	}
+	mixed := modern
+	mixed.Harness = "codex"
+	writeFile(receiptFile{FormatVersion: 2, HostID: "host", Receipts: []receipt.Receipt{mixed}})
+	if _, err := s.LoadReceipts("host"); err == nil {
+		t.Fatal("accepted a receipt mixing both forms")
+	}
+}
+
+// A version 2 snapshot can carry only legacy receipts; publishing upgrades it
+// to version 3 without changing what its receipts replay.
+func TestSnapshotVersionThreeReceipts(t *testing.T) {
+	s := openStore(t)
+	modern := commandStateReceipt(1)
+	e := fixture()
+	block := snapshot.SourceID(modern.BlockID)
+	e.Snapshot.Sessions = []snapshot.Session{{ID: snapshot.SourceID(modern.SessionID), ActiveWindow: "window",
+		Windows: []snapshot.Window{{ID: "window", LayerID: "layer", Focus: block,
+			Layout: snapshot.Node{Block: &snapshot.Block{ID: block, CWD: "/", AgentResume: &modern}}}}}}
+	if e.Snapshot.Version != 3 {
+		t.Fatalf("fixture snapshot version %d", e.Snapshot.Version)
+	}
+	if err := e.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	e.Snapshot.Version = 2
+	if err := e.Validate(); err == nil || !strings.Contains(err.Error(), "snapshot version 3") {
+		t.Fatalf("command receipt accepted in v2: %v", err)
+	}
+	legacy := stateReceipt(1)
+	legacy.Harness = "claude-team"
+	e.Snapshot.Sessions[0].Windows[0].Layout.Block.AgentResume = &legacy
+	if err := e.Validate(); err != nil {
+		t.Fatalf("legacy receipt rejected in v2: %v", err)
+	}
+	published, err := s.Publish(e, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.Snapshot.Version != 3 {
+		t.Fatalf("published snapshot version %d", published.Snapshot.Version)
+	}
+	for _, b := range published.Snapshot.Sessions[0].Blocks() {
+		if b.AgentResume == nil || !b.AgentResume.Legacy() || b.AgentResume.InitialInput() != "" {
+			t.Fatalf("upgrade changed the inert legacy receipt: %+v", b.AgentResume)
+		}
+	}
+	for _, version := range []int{0, 4} {
+		e.Snapshot.Version = version
+		if err := e.Validate(); err == nil {
+			t.Fatalf("accepted snapshot version %d", version)
+		}
 	}
 }

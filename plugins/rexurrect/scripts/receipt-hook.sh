@@ -1,20 +1,22 @@
 #!/bin/sh
 set -eu
 
-# A wrapper grants ownership explicitly. Never infer an account from its home.
-rr_host=${1-}
-rr_harness=${RR_HARNESS:-}
-case "$rr_host:$rr_harness" in
-codex:codex | codex:codex-team)
-	[ -z "${CLAUDECODE:-}" ] && [ -z "${CODEX_THREAD_ID:-}" ] || exit 0
-	;;
-claude:claude | claude:claude-ddb | claude:claude-team)
-	# Claude sets CLAUDECODE in its own hooks, including the root session.
-	[ -z "${CODEX_THREAD_ID:-}" ] || exit 0
-	;;
+# rexurrect-launch grants ownership explicitly: RR_HOST names the agent type
+# and RR_HARNESS the command it was started as. Never infer an account from a
+# home directory or process arguments.
+case "${1-}:${RR_HOST:-}" in
+codex:codex | claude:claude) rr_host=$1 ;;
 *) exit 0 ;;
 esac
+rr_command=${RR_HARNESS:-}
+[ -n "$rr_command" ] || exit 0
+# Agent tool shells carry CODEX_THREAD_ID; Claude also sets CLAUDECODE in its
+# own hooks, so only a Codex hook can treat that marker as nesting.
+[ -z "${CODEX_THREAD_ID:-}" ] || exit 0
+[ "$rr_host" = claude ] || [ -z "${CLAUDECODE:-}" ] || exit 0
 [ -n "${REX_SESSION:-}" ] && [ -n "${REX_BLOCK:-}" ] || exit 0
+rr_server=${REXURRECT_SERVER:?rexurrect-launch sets the Rex endpoint}
+rr_state=${REXURRECT_STATE_DIR:?rexurrect-launch sets the state directory}
 
 # Receipt models follow [a-z][a-z0-9]*([.-][a-z0-9]+)* and at most 128 bytes.
 rr_valid_model() {
@@ -24,8 +26,11 @@ rr_valid_model() {
 	esac
 }
 
-rr_server=${REXURRECT_SERVER:-"unix://$HOME/Library/Application Support/rex/server.sock"}
-rr_state=${REXURRECT_STATE_DIR:-"$HOME/Library/Application Support/rexurrect"}
+rr_receipt() {
+	rexurrect receipt "$@" --server "$rr_server" --state-dir "$rr_state" \
+		--session "$REX_SESSION" --block "$REX_BLOCK" --command "$rr_command" >/dev/null
+}
+
 rr_event=$(
 	head -c 65537
 	printf '.'
@@ -45,36 +50,31 @@ fi
 
 case "$rr_kind" in
 SessionStart)
+	# The manifests already filter sources per host; re-registering on
+	# compaction is idempotent, so one list serves both hosts here.
 	rr_source=$(printf '%s' "$rr_event" | jq -er '.source // "" | select(type == "string")')
-	case "$rr_host:$rr_source" in
-	codex:startup | codex:resume | codex:clear | codex:fork) ;;
-	claude:startup | claude:resume | claude:clear | claude:compact | claude:fork) ;;
+	case "$rr_source" in
+	startup | resume | clear | compact | fork) ;;
 	*) exit 0 ;;
 	esac
-	rr_model=$(printf '%s' "$rr_event" | jq -er '.model // "" | select(type == "string")')
-	rr_effort=
-	if [ "$rr_host" = claude ]; then
+	if [ "$rr_host" = claude ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
 		# Later tool shells must not inherit this root session's ownership.
-		if [ -n "${CLAUDE_ENV_FILE:-}" ] && ! grep -qxF "export RR_HARNESS=''" "$CLAUDE_ENV_FILE" 2>/dev/null; then
-			printf "export RR_HARNESS=''\n" >>"$CLAUDE_ENV_FILE"
+		rr_marker="export RR_HARNESS='' RR_HOST=''"
+		if ! grep -qxF "$rr_marker" "$CLAUDE_ENV_FILE" 2>/dev/null; then
+			printf '%s\n' "$rr_marker" >>"$CLAUDE_ENV_FILE"
 		fi
-		rr_model=${rr_model:-${RR_MODEL:-}}
-		rr_effort=${RR_EFFORT:-}
 	fi
+	rr_model=$(printf '%s' "$rr_event" | jq -er '.model // "" | select(type == "string")')
+	rr_model=${rr_model:-${RR_MODEL:-}}
 	# Register without an unusable model so replay still resumes the conversation.
 	if [ -n "$rr_model" ] && ! rr_valid_model "$rr_model"; then
 		printf 'rexurrect: ignoring model %s; replay uses the account default\n' "$rr_model" >&2
 		rr_model=
 	fi
-	rexurrect receipt set --server "$rr_server" --state-dir "$rr_state" \
-		--call-timeout 1s --lock-timeout 30s \
-		--session "$REX_SESSION" --block "$REX_BLOCK" --harness "$rr_harness" \
-		--conversation "$rr_id" --model "$rr_model" --effort "$rr_effort" >/dev/null
+	rr_receipt set --call-timeout 1s --lock-timeout 30s --host "$rr_host" \
+		--conversation "$rr_id" --model "$rr_model" --effort "${RR_EFFORT:-}"
 	;;
 SessionEnd)
-	rexurrect receipt clear --server "$rr_server" --state-dir "$rr_state" \
-		--call-timeout 1s --lock-timeout 1500ms \
-		--session "$REX_SESSION" --block "$REX_BLOCK" --harness "$rr_harness" \
-		--conversation "$rr_id" >/dev/null
+	rr_receipt clear --call-timeout 1s --lock-timeout 1500ms --conversation "$rr_id"
 	;;
 esac

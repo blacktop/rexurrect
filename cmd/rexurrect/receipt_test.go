@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/blacktop/rexurrect/internal/receipt"
@@ -35,7 +36,7 @@ esac
 		err := run(t.Context(), args, &out, &diagnostic)
 		return out.Bytes(), err
 	}
-	set := []string{"--session", session, "--block", block, "--harness", "claude-ddb", "--conversation", conversation, "--model", "model-1", "--effort", "high"}
+	set := []string{"--session", session, "--block", block, "--host", "claude", "--command", "claude-work", "--conversation", conversation, "--model", "model-1", "--effort", "high"}
 	if _, err := invoke("set", set...); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +48,7 @@ esac
 	if err := json.Unmarshal(data, &entries); err != nil {
 		t.Fatal(err)
 	}
-	want := []receipt.Receipt{{SessionID: session, BlockID: block, Harness: "claude-ddb", Conversation: conversation, Model: "model-1", Effort: "high"}}
+	want := []receipt.Receipt{{SessionID: session, BlockID: block, Host: "claude", Command: "claude-work", Conversation: conversation, Model: "model-1", Effort: "high"}}
 	if !reflect.DeepEqual(entries, want) {
 		t.Fatalf("list: %s", data)
 	}
@@ -59,6 +60,22 @@ esac
 	if _, err := invoke("set", append(set, "--effort", "high;id")...); err == nil {
 		t.Fatal("accepted injection")
 	}
+	for _, bad := range [][]string{
+		{"--host", "vim"}, {"--host", ""}, {"--command", ""}, {"--command", "-claude"},
+		{"--command", "claude work"}, {"--command", strings.Repeat("c", 65)},
+		{"--command", "if"},
+		{"--harness", "claude"},
+	} {
+		if _, err := invoke("set", append(set, bad...)...); err == nil {
+			t.Fatalf("accepted set %q", bad)
+		}
+	}
+	if _, err := invoke("set", append(set, "--command", "Claude_Work.v2")...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := invoke("set", set...); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := invoke("clear", "--session", session, "--block", block, "--conversation", "00000000-0000-0000-0000-000000000000"); err != nil {
 		t.Fatal(err)
 	}
@@ -68,9 +85,10 @@ esac
 	}
 	key := []string{"--session", session, "--block", block}
 	for _, miss := range [][]string{
+		{"--command", "codex"},
 		{"--harness", "codex"},
-		{"--harness", "codex", "--conversation", conversation},
-		{"--harness", "claude-ddb", "--conversation", "00000000-0000-0000-0000-000000000000"},
+		{"--command", "codex", "--conversation", conversation},
+		{"--command", "claude-work", "--conversation", "00000000-0000-0000-0000-000000000000"},
 	} {
 		if _, err := invoke("clear", append(append([]string{}, key...), miss...)...); err != nil {
 			t.Fatal(err)
@@ -81,8 +99,9 @@ esac
 		}
 	}
 	for _, bad := range [][]string{
-		{"--harness", "zsh"},
-		{"--harness", "codex;id"},
+		{"--command", "-zsh"},
+		{"--command", "codex;id"},
+		{"--command", "claude-work", "--harness", "codex"},
 		{"--lock-timeout", "0"},
 		{"--lock-timeout", "61s"},
 	} {
@@ -93,7 +112,7 @@ esac
 	if _, err := invoke("set", append(set, "--lock-timeout", "0")...); err == nil {
 		t.Fatal("accepted set --lock-timeout 0")
 	}
-	over := append(set, "--harness", "codex", "--lock-timeout", "61s")
+	over := append(set, "--command", "codex", "--lock-timeout", "61s")
 	if _, err := invoke("set", over...); err == nil {
 		t.Fatal("accepted set --lock-timeout 61s")
 	}
@@ -101,7 +120,7 @@ esac
 		t.Fatal("list accepted --lock-timeout")
 	}
 	guarded := append(append([]string{}, key...),
-		"--harness", "claude-ddb", "--conversation", conversation, "--lock-timeout", "1s")
+		"--command", "claude-work", "--conversation", conversation, "--lock-timeout", "1s")
 	if _, err := invoke("clear", guarded...); err != nil {
 		t.Fatal(err)
 	}
@@ -118,5 +137,22 @@ esac
 	data, err = invoke("list", "--json")
 	if err != nil || string(data) != "[]\n" {
 		t.Fatalf("clear/list: %s %v", data, err)
+	}
+	legacy := append(append([]string{}, key...), "--harness", "codex", "--conversation", conversation)
+	if _, err := invoke("set", legacy...); err != nil {
+		t.Fatalf("released set flags: %v", err)
+	}
+	data, err = invoke("list", "--json")
+	want = []receipt.Receipt{{SessionID: session, BlockID: block, Harness: "codex", Conversation: conversation}}
+	entries = nil
+	if err != nil || json.Unmarshal(data, &entries) != nil || !reflect.DeepEqual(entries, want) {
+		t.Fatalf("released set/list: %s %v", data, err)
+	}
+	if _, err := invoke("clear", append(append([]string{}, key...), "--harness", "codex", "--conversation", conversation)...); err != nil {
+		t.Fatalf("released clear flags: %v", err)
+	}
+	data, err = invoke("list", "--json")
+	if err != nil || string(data) != "[]\n" {
+		t.Fatalf("released clear/list: %s %v", data, err)
 	}
 }

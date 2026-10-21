@@ -1,3 +1,3 @@
-function claude -d 'Run Claude with Rex receipt hooks'
-    _rexurrect_claude claude $argv
+function claude -d 'Run Claude Code with rexurrect receipt ownership'
+    rexurrect-launch claude claude $argv
 end

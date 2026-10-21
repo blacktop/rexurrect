@@ -202,17 +202,27 @@ results take precedence over the general [Rex documentation](https://www.superlo
 
 ## Snapshot versions
 
-Generations written by this version use snapshot version 2. Version 1
-generations and restore journals written by `8974b2e` still load and restore;
-the generation envelope, pointer, and journal binding formats remain unchanged. Agent receipts and
-receipt-pruning reports belong to snapshot v2. Downgrading to the old binary
-cannot read v2 generations and fails closed with an error without modifying
-state. Depending on the content, its strict decoder reports an unknown field
-or rejects an unsupported snapshot version. `TestSnapshotV1Compatibility`
-compiles the exact `8974b2e` reader and writer and checks that its `status`,
-`restore`, and `auto` paths reject receipt-free, receipt-bearing, and
-pruning-report-only v2 generations while preserving every state file byte for
-byte. Preserve v1 state separately if a downgrade is required.
+Generations written by this version use snapshot version 3. Version 1
+generations and journals written by `8974b2e` and version 2 generations written
+by v0.1.0 (`58c87d7`) still load and restore; the generation envelope, pointer,
+and journal binding formats remain unchanged. Agent receipts and
+receipt-pruning reports belong to snapshot v2; the host and command receipt
+form belongs to v3. Publishing upgrades an older snapshot in place without
+changing what any of its receipts replay.
+
+Downgrading cannot read newer generations and fails closed. The `8974b2e`
+reader rejects every v2 shape; `TestSnapshotV1Compatibility` compiles that exact
+reader and writer and checks `status`, `restore`, and `auto` preserve every
+state file byte for byte. The v0.1.0 reader rejects v3 generations the same way
+(`TestReleasedReaderCompatibility`). The transitional state is the exception:
+a v0.1.0 generation beside a format 2 `receipts.json`, which exists as soon as a
+hook registers after the upgrade and before the first v3 save. v0.1.0 `status`
+still works on that state and `receipt list` fails on the unknown field, but
+v0.1.0 `restore` creates the sessions and types their legacy commands before it
+reads the store during receipt rebinding, then fails with a `created` journal
+record and no `complete` (`TestReleasedRestoreTransitionalPrivateServer`).
+Back up the state directory before upgrading; restore the backup, not the live
+directory, if a downgrade is required.
 
 Supported fields are the schema version; ordered sessions and windows with their
 source IDs and display labels; active-window ID; tiled base-layer ID; recursive
@@ -499,53 +509,66 @@ transcripts, or terminal contents. The harness selects the account wrapper;
 credentials and shell environment remain the responsibility of that wrapper.
 
 `receipts.json` is an atomically replaced, mode-0600 object containing
-`format_version: 1`, the Rex `host_id`, and a `receipts` array. The array has at
-most 1024 entries; the file is limited to 512 KiB and each entry to 1024 bytes.
-Each entry has this shape:
+`format_version: 2`, the Rex `host_id`, and a `receipts` array. Format 1 files
+are still read. The array has at most 1024 entries; the file is limited to
+512 KiB and each entry to 1024 bytes. A registered entry has this shape:
 
 ```json
-{"session_id":"session:01234567-89ab-4cde-8fab-0123456789ab","block_id":"block:01234567-89ab-4cde-8fab-0123456789ab","harness":"codex-team","conversation":"01234567-89ab-4cde-8fab-0123456789ab","model":"gpt-6-astra","effort":"high"}
+{"session_id":"session:01234567-89ab-4cde-8fab-0123456789ab","block_id":"block:01234567-89ab-4cde-8fab-0123456789ab","host":"codex","command":"codex-work","conversation":"01234567-89ab-4cde-8fab-0123456789ab","model":"gpt-6-astra","effort":"high"}
 ```
 
-The key is the full Rex `session:UUID` and `block:UUID` pair. Conversation IDs
-must be UUIDs. The only harnesses are `claude`, `claude-ddb`, `codex`,
-`codex-team`, and `claude-team`. Optional models match
-`[a-z][a-z0-9]*([.-][a-z0-9]+)*` and have at most 128 bytes. Optional effort is
-`low`, `medium`, `high`, or `xhigh`. Unknown fields, duplicate keys, other
-harnesses, paths, whitespace, and shell metacharacters are rejected. No receipt
-contains credentials, environment variables, executable paths, or cwd.
+The key is the full Rex `session:UUID` and `block:UUID` pair. `host` is the
+agent type, `codex` or `claude`, and selects the resume syntax. `command` is
+the exact command name the launcher was started as and the word rexurrect
+types; it matches `[A-Za-z_][A-Za-z0-9_.-]{0,63}`, so it is a bare word with
+no spaces, metacharacters, or leading dash. Reserved shell words are excluded.
+Conversation IDs must be UUIDs.
+Optional models match `[a-z][a-z0-9]*([.-][a-z0-9]+)*` and have at most 128
+bytes. Optional effort is `low`, `medium`, `high`, or `xhigh`. Registration
+rejects unknown fields, duplicate keys, an unknown host, a missing host or
+command, paths, whitespace, and shell metacharacters. No receipt contains
+credentials, environment variables, executable paths, or cwd.
+
+Entries written before format 2 carry a legacy `harness` instead of `host` and
+`command`, and keep the execution semantics format 1 gave them: previously
+resumable commands replay as before, while manual-only and unknown names remain
+inert metadata. An entry that mixes a
+harness with a host or command, or has only one of host and command, is
+rejected. New integrations use `--host` and `--command`. The released
+`receipt set --harness` form remains available for older hooks; its legacy
+execution rules are unchanged. An explicit new-form registration replaces a
+legacy entry for the same block.
 
 Save copies a live block's receipt into its optional `agent_resume` field and
 reports removed block IDs in `report.pruned_receipts`. It prunes the receipt
 store only after publishing the snapshot; a rejected save leaves receipts
 intact. Receipts for live unsupported layers or detached blocks remain stored
 but are not replayed. Every present receipt is validated and must match its
-enclosing session/block. A bounded, otherwise valid unknown harness is retained
-as snapshot metadata and restored as a plain terminal; registration still
-requires the fixed allowlist. Strict state-file reads reject duplicate JSON
-object members at every depth, including escaped spellings of the same name.
+enclosing session/block. A bounded, otherwise valid unknown legacy harness is
+retained as snapshot metadata and restored as a plain terminal. Strict
+state-file reads reject duplicate JSON object members at every depth,
+including escaped spellings of the same name.
 
 The [Rex terminal option](https://www.superlogical.com/rex/docs/reference/lua)
 types the following text, followed by one newline, into the new normal terminal.
 `UUID`, `M`, and `E` stand for validated values. Omit a model or effort flag when
 that field was not recorded.
 
-| Harness | Exact typed command |
+| Host | Exact typed command (`NAME` is the recorded command) |
 | --- | --- |
-| `claude` | `claude --resume UUID --model M --effort E` |
-| `claude-ddb` | `claude-ddb --resume UUID --model M --effort E` |
-| `codex` | `codex resume UUID -m M -c model_reasoning_effort="E"` |
-| `codex-team` | `codex-team resume UUID -m M -c model_reasoning_effort="E"` |
-| `claude-team` | No input, ever |
+| `claude` | `NAME --resume UUID --model M --effort E` |
+| `codex` | `NAME resume UUID -m M -c model_reasoning_effort="E"` |
 
-This assumes the default login shell defines the recorded account function or
-finds that executable on its normal PATH. A receipt does not prove a login,
-model entitlement, available conversation, or successful agent connection.
-Invalid receipts fail restore before creation; the command builder also emits
-no input for invalid or unknown harnesses. `claude-team` and unknown harnesses
-receive a `not_resumed` entry in the create intent, restore result, and
-automatic-cycle result. Unknown harnesses are not registered in the receipt
-store. There is no override for the `claude-team` rule.
+Reserved words in bash, zsh, and fish are rejected as command names. Legacy
+entries retain their original command text; manual-only and unknown legacy
+names get no input. This assumes the default
+login shell defines the recorded command as a function or finds that
+executable on its normal PATH. A receipt does not prove a login, model
+entitlement, available conversation, or successful agent connection. Invalid
+receipts fail restore before creation; the command builder also emits no input
+for inert legacy entries, which receive a `not_resumed` entry (with the name
+under `harness`) in the create intent, restore result, and automatic-cycle
+result.
 
 The write-ahead create intent covers the input along with the session creation.
 Recovery adopts a creation by its operation marker; it never sends that input a
@@ -559,21 +582,23 @@ and never types again.
 These examples run in the user's Fish terminal. Set the explicit endpoint and
 state directory to the same values used by the automatic job:
 
-```fish
-set -l rr_server unix:///absolute/path/rex.sock
-set -l rr_state "$HOME/Library/Application Support/rexurrect"
-rexurrect receipt set --server "$rr_server" --state-dir "$rr_state" --session "$REX_SESSION" --block "$REX_BLOCK" --harness codex-team --conversation 01234567-89ab-4cde-8fab-0123456789ab --model gpt-6-astra --effort high
+```sh
+rr_server=unix:///absolute/path/rex.sock
+rr_state="$HOME/Library/Application Support/rexurrect"
+rexurrect receipt set --server "$rr_server" --state-dir "$rr_state" --session "$REX_SESSION" --block "$REX_BLOCK" --host codex --command codex --conversation 01234567-89ab-4cde-8fab-0123456789ab --model gpt-6-astra --effort high
 rexurrect receipt list --server "$rr_server" --state-dir "$rr_state" --json
 rexurrect receipt clear --server "$rr_server" --state-dir "$rr_state" --session "$REX_SESSION" --block "$REX_BLOCK"
 ```
 
 `list` optionally filters by `--session` and/or `--block`. `clear` optionally
-takes `--conversation UUID` and `--harness NAME` as guards; under the lock it
+takes `--conversation UUID` and `--command NAME` as guards; under the lock it
 removes only a receipt matching every supplied guard, so a late SessionEnd hook
-cannot clear a newer receipt in the same pane, and a wrapper's exit cleanup
-cannot clear a receipt another harness registered. With both guards, both must
-match. The harness guard uses the same allowlist as `set`. A guard that matches
-nothing is a successful no-op.
+cannot clear a newer receipt in the same pane, and a launcher's exit cleanup
+cannot clear a receipt another command registered. With both guards, both must
+match. The command guard uses the same name grammar as `set` and also matches
+a legacy entry whose harness is that name. The released `--harness` guard
+remains an alias for older wrappers. Supplying both command-name flags with
+different values is an error. A guard that matches nothing is a successful no-op.
 Receipt commands wait up to 30 seconds for the state lock and return an explicit
 timeout error if it stays held. `set` and `clear` accept `--lock-timeout
 DURATION` (positive, at most 60 seconds) to shorten that wait; a hook whose host
@@ -585,7 +610,7 @@ saves, not an already published generation.
 
 ### Hook and wrapper examples
 
-The [portable agent plugin](../plugins/rexurrect/README.md) is the packaged setup
+The [agent plugin](../plugins/rexurrect/README.md) is the packaged setup
 for Codex and Claude Code. It keeps its scripts and skills together and provides
 repository marketplace metadata. The examples below are the manually managed
 alternative. When migrating, remove only the old rexurrect hook entries after
@@ -594,87 +619,42 @@ other unrelated hooks.
 
 These are documentation examples only; the tool does not install hooks or edit
 dotfiles. The [Claude Code hook reference](https://code.claude.com/docs/en/hooks)
-defines the JSON input on stdin. Save the following as
-`~/.local/bin/rexurrect-claude-hook` and replace the endpoint. It runs with
-`sh ~/.local/bin/rexurrect-claude-hook` and requires `jq` on PATH.
-
-```sh
-#!/bin/sh
-set -eu
-[ -n "${REX_SESSION:-}" ] && [ -n "${REX_BLOCK:-}" ] && [ -n "${RR_HARNESS:-}" ] || exit 0
-rr_server=unix:///absolute/path/rex.sock
-rr_state="$HOME/Library/Application Support/rexurrect"
-rr_event=$(cat)
-rr_kind=$(printf '%s' "$rr_event" | jq -er '.hook_event_name')
-rr_id=$(printf '%s' "$rr_event" | jq -er '.session_id')
-case "$rr_kind" in
-  SessionStart)
-    rr_model=$(printf '%s' "$rr_event" | jq -r '.model // ""')
-    if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-      printf "export RR_HARNESS=''\n" >>"$CLAUDE_ENV_FILE"
-    fi
-    rexurrect receipt set --server "$rr_server" --state-dir "$rr_state" \
-      --session "$REX_SESSION" --block "$REX_BLOCK" --harness "$RR_HARNESS" \
-      --conversation "$rr_id" --model "${rr_model:-${RR_MODEL:-}}" \
-      --effort "${RR_EFFORT:-}"
-    ;;
-  SessionEnd)
-    rexurrect receipt clear --server "$rr_server" --state-dir "$rr_state" \
-      --session "$REX_SESSION" --block "$REX_BLOCK" --harness "$RR_HARNESS" \
-      --conversation "$rr_id"
-    ;;
-esac
-```
-
-Merge these entries into the Claude Code settings for the account you intend
-to record. The hook blanks `RR_HARNESS` in that session's tool shells, so a
-nested `claude` leaves the root receipt alone. In the existing Fish functions named `claude` and `claude-ddb`,
-export `RR_HARNESS` as that function's exact name, and set `RR_MODEL` and
-`RR_EFFORT` to the account's actual defaults. Insert this before the existing
-launch command so explicit replay flags override those defaults. Keep that
-command and its account routing intact. SessionStart's model takes priority
-when supplied.
-
-```fish
-set -lx RR_HARNESS (status function)
-set -lx RR_MODEL "$RR_MODEL"
-set -lx RR_EFFORT "$RR_EFFORT"
-set -l rr_argv $argv
-argparse --ignore-unknown 'model=' 'effort=' -- $argv; or return
-if set -q _flag_model
-    set RR_MODEL "$_flag_model"
-end
-if set -q _flag_effort
-    set RR_EFFORT "$_flag_effort"
-end
-set argv $rr_argv
-```
+defines the JSON input on stdin. The manual setup uses the plugin's
+[receipt hook](../plugins/rexurrect/scripts/receipt-hook.sh) with the `claude`
+host argument; copy it to a fixed path such as
+`~/.agents/hooks/rexurrect-claude.sh`, start Claude through the plugin's
+[`rexurrect-launch`](../plugins/rexurrect/shell/rexurrect-launch), and merge
+these entries into the Claude Code settings. SessionStart's model takes
+priority over the launcher's recorded default when supplied.
 
 ```json
-{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"sh \"$HOME/.local/bin/rexurrect-claude-hook\"","timeout":120}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"sh \"$HOME/.local/bin/rexurrect-claude-hook\"","timeout":120}]}]}}
+{"hooks":{"SessionStart":[{"matcher":"startup|resume|clear|compact|fork","hooks":[{"type":"command","command":"sh \"$HOME/.agents/hooks/rexurrect-claude.sh\" claude","timeout":60}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"sh \"$HOME/.agents/hooks/rexurrect-claude.sh\" claude","timeout":3}]}]}}
 ```
 
 #### Codex lifecycle hook
 
 Fresh Codex conversations need lifecycle hooks as well as the account wrappers.
-Upgrade rexurrect first and confirm that `receipt clear --help` lists
-`--harness` and `--lock-timeout`. Install `jq` if it is missing. The manual
+Interactive Codex must run with `--no-daemon` inside Rex so its hooks receive
+the owning pane's context and end when that foreground session exits. A TUI
+attached to a shared daemon does not provide that lifecycle. This path was
+verified with Codex CLI 0.163.0.
+Upgrade rexurrect first and confirm that `receipt set --help` lists `--host`
+and `--command`. Install `jq` if it is missing. The manual
 setup uses the same [receipt hook](../plugins/rexurrect/scripts/receipt-hook.sh)
-as the portable plugin. From a stable checkout, copy it to a fixed path:
+as the packaged plugin. From a stable checkout, copy it to a fixed path:
 
-```fish
-set -l rr_plugin /absolute/path/to/rexurrect/plugins/rexurrect
+```sh
+rr_plugin=/absolute/path/to/rexurrect/plugins/rexurrect
 mkdir -p "$HOME/.agents/hooks"
 cp -n "$rr_plugin/scripts/receipt-hook.sh" "$HOME/.agents/hooks/rexurrect-codex.sh"
 ```
 
 If the destination already exists, review and update it before continuing.
-Merge these two entries into `~/.codex/hooks.json` and, when configured,
-`~/.codex-team/hooks.json`. Both use the `codex` host argument; the account
-wrapper supplies the exact `codex` or `codex-team` harness through `RR_HARNESS`.
-Preserve existing entries, including Rex's own
-`rex __internal session-start --agent codex` hook. Do not replace the whole
-file or copy trust hashes from another account.
+Merge these two entries into the `hooks.json` of each Codex home you launch
+from Rex. Both use the `codex` host argument; the launcher supplies the exact
+harness through `RR_HARNESS` and `RR_HOST`. Preserve existing entries,
+including Rex's own `rex __internal session-start --agent codex` hook. Do not
+replace the whole file or copy trust hashes from another Codex home.
 
 ```json
 {
@@ -710,54 +690,28 @@ The [Codex hook payload](https://learn.chatgpt.com/docs/hooks) supplies the
 conversation ID and model. The longer startup deadline leaves room for the
 normal state-lock wait. The exit hook uses a 1500 ms lock wait and both receipt
 guards, but its three-second host deadline can still interrupt a slow Rex call.
-The wrapper below provides a second cleanup attempt.
+The launcher below provides a second cleanup attempt.
 The hook records the model supplied by Codex and leaves effort empty because
 the payload does not provide it; replay uses that account's effort default.
 Compaction keeps the existing receipt. Nested agent invocations and invocations
-without the matching wrapper marker do not register or clear receipts.
+without the launcher's ownership markers do not register or clear receipts.
 
-#### Codex receipt wrapper
+#### Agent launcher
 
-Install the plugin's [Codex helper](../plugins/rexurrect/shell/_rexurrect_codex.fish)
-in Fish's autoload directory:
+The plugin's [`rexurrect-launch`](../plugins/rexurrect/shell/rexurrect-launch)
+is a POSIX `sh` script; install it on PATH and route `codex` and `claude`
+through it with the provided [`rexurrect.sh`](../plugins/rexurrect/shell/rexurrect.sh)
+functions for bash and zsh or the [`codex.fish`](../plugins/rexurrect/shell/codex.fish)
+and [`claude.fish`](../plugins/rexurrect/shell/claude.fish) functions for fish.
+The function name is the command rexurrect replays. The ownership markers,
+`--no-daemon` rules, model and effort capture, exit cleanup, and limits are
+described in the plugin README's
+[ownership section](../plugins/rexurrect/README.md#give-the-root-agent-explicit-ownership);
+this document does not repeat them.
 
-```fish
-set -l rr_plugin /absolute/path/to/rexurrect/plugins/rexurrect
-mkdir -p "$HOME/.config/fish/functions"
-cp -n "$rr_plugin/shell/_rexurrect_codex.fish" "$HOME/.config/fish/functions/"
-```
-
-Merge or replace a skipped, older helper before relying on the new hook. Keep
-any custom executable target in both launch branches, then reload the function
-or open a new Fish terminal.
-
-The function-scoped marker identifies the account wrapper to the hook. The
-backstop may wait up to the normal 30 seconds and only clears that harness's
-receipt. Nested invocations skip the backstop too, including nested Codex calls
-using the same account. Running overlapping foreground wrappers in one block,
-such as backgrounding `codex &`, is unsupported. A failed backstop returns its
-error instead of silently reporting successful cleanup.
-
-#### Codex account functions
-
-If `codex` is currently only an executable, install the supplied entry point:
-
-```fish
-set -l rr_plugin /absolute/path/to/rexurrect/plugins/rexurrect
-cp -n "$rr_plugin/shell/codex.fish" "$HOME/.config/fish/functions/"
-```
-
-If you already have `codex` or `codex-team` functions, keep their existing
-account setup and executable selection. For wrappers using the PATH `codex`,
-replace only the final launch with
-`_rexurrect_codex codex $argv` or `_rexurrect_codex codex-team $argv`,
-respectively. Remove the old resume-only registration and cleanup snippets.
-Forward the arguments unchanged, and do not use `exec`: the helper must regain
-control when Codex exits. Configure the `codex-team` hooks only when that
-account's wrapper exists.
-
-Start each account once and use `/hooks` to review and trust its two new
-definitions. Then open a fresh conversation through each wrapper and check
+Start `codex --no-daemon` and use `/hooks` to review and trust the two new
+definitions; a daemon-attached TUI does not list newly installed hooks. Then
+open a fresh conversation through the launcher and check
 `rexurrect receipt list` with your configured endpoint and state directory.
 Each entry must have the correct Rex block, harness, and conversation UUID.
 Exit normally and verify that the matching receipt disappears. If either
@@ -765,11 +719,14 @@ operation fails, resolve that failure before relying on automatic resume.
 Use a user-initiated Rex restart for the final recovery check, and verify the
 actual resumed conversation identities; a completed layout journal alone is
 not proof that Codex resumed successfully.
+Codex 0.163.0 refuses to reopen a thread still held by the shared daemon and
+asks you to close it in the other app. Quitting only the attached TUI can leave
+the thread open; release it deliberately before relying on foreground recovery.
 
-`TestAgentResumeRoundTrip` uses only a private Rex server and private Fish
-functions, with no agent service connection. The allowlisted functions register
-on start and clear their matching receipt on return. It checks the exact argv
-and cwd after restart through `AutoCycle`, `claude-team` and a crafted unknown
+`TestAgentResumeRoundTrip` uses only a private Rex server and private login
+shell functions, with no agent service connection. The allowlisted functions
+register on start and clear their matching receipt on return. It checks the exact argv
+and cwd after restart through `AutoCycle`, manual-only and crafted unknown
 harness in the durable journal, receipt rebinding and clearing, mapped topology,
 and an inert second restore. Its
 real login-shell gate must run outside the agent sandbox:
