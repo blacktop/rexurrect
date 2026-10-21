@@ -132,7 +132,7 @@ func TestRestoreRecoveryPrivateServer(t *testing.T) {
 		mustCall(t, s.client, "session.destroy", map[string]any{"session_id": id}, nil)
 	}
 	// A matching display label must not cause an existing session to be adopted.
-	unrelated, err := s.client.createSession(t.Context(), e.Snapshot.Sessions[0], e.Snapshot.Sessions[0].Label)
+	unrelated, err := s.client.createSession(t.Context(), e.Snapshot.Sessions[0], e.Snapshot.Sessions[0].Label, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestRestoreRecoveryPrivateServer(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			recoveryDir := filepath.Join(t.TempDir(), "saved")
 			saved, marker := prepareIntent(t, s.client, recoveryDir, one)
-			created, err := s.client.createSession(t.Context(), saved.Snapshot.Sessions[0], marker)
+			created, err := s.client.createSession(t.Context(), saved.Snapshot.Sessions[0], marker, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -241,7 +241,7 @@ func TestRestoreRecoveryPrivateServer(t *testing.T) {
 		recoveryDir := filepath.Join(t.TempDir(), "saved")
 		saved, marker := prepareIntent(t, s.client, recoveryDir, one)
 		for range 2 {
-			if _, err := s.client.createSession(t.Context(), saved.Snapshot.Sessions[0], marker); err != nil {
+			if _, err := s.client.createSession(t.Context(), saved.Snapshot.Sessions[0], marker, nil); err != nil {
 				t.Fatal(err)
 			}
 		}

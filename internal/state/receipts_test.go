@@ -222,7 +222,7 @@ func TestSnapshotVersionThreeReceipts(t *testing.T) {
 	e.Snapshot.Sessions = []snapshot.Session{{ID: snapshot.SourceID(modern.SessionID), ActiveWindow: "window",
 		Windows: []snapshot.Window{{ID: "window", LayerID: "layer", Focus: block,
 			Layout: snapshot.Node{Block: &snapshot.Block{ID: block, CWD: "/", AgentResume: &modern}}}}}}
-	if e.Snapshot.Version != 3 {
+	if e.Snapshot.Version != snapshot.Version {
 		t.Fatalf("fixture snapshot version %d", e.Snapshot.Version)
 	}
 	if err := e.Validate(); err != nil {
@@ -242,7 +242,7 @@ func TestSnapshotVersionThreeReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if published.Snapshot.Version != 3 {
+	if published.Snapshot.Version != snapshot.Version {
 		t.Fatalf("published snapshot version %d", published.Snapshot.Version)
 	}
 	for _, b := range published.Snapshot.Sessions[0].Blocks() {
@@ -250,7 +250,7 @@ func TestSnapshotVersionThreeReceipts(t *testing.T) {
 			t.Fatalf("upgrade changed the inert legacy receipt: %+v", b.AgentResume)
 		}
 	}
-	for _, version := range []int{0, 4} {
+	for _, version := range []int{0, snapshot.Version + 1} {
 		e.Snapshot.Version = version
 		if err := e.Validate(); err == nil {
 			t.Fatalf("accepted snapshot version %d", version)

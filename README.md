@@ -55,6 +55,18 @@ The wrapper identifies which account owns the pane, so installing the plugin
 alone isn't enough. Codex runs with `--no-daemon` inside Rex so its hooks follow
 the pane's lifetime.
 
+## Scrollback
+
+`save --scrollback` and `auto --scrollback` also bring back each pane's earlier
+output above its new prompt. It is off by default. The output is encrypted
+before it reaches disk; the key lives in your login keychain, so a copied state
+directory or a backup holds no readable terminal output, and a missing key
+only costs the scrollback, never the layout or agent recovery. Full-screen
+programs are skipped. Turn it on for the automatic job with
+`rexurrect agent install --scrollback` (same `--server` and `--state-dir` as
+before), or run `rexurrect save --scrollback` yourself; see
+[Encrypted scrollback](docs/compatibility.md#encrypted-scrollback-s4).
+
 ## Usage
 
 The automatic job handles routine recovery. Use `rexurrect status` to inspect

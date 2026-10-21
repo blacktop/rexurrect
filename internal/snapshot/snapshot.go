@@ -10,10 +10,12 @@ import (
 	"syscall"
 
 	"github.com/blacktop/rexurrect/internal/receipt"
+	"github.com/blacktop/rexurrect/internal/scrollback"
 )
 
-// Version 2 added agent receipts; version 3 added their host and command form.
-const Version = 3
+// Version 2 added agent receipts; version 3 added their host and command form;
+// version 4 added encrypted scrollback references.
+const Version = 4
 
 type SourceID string
 type LiveID string
@@ -50,6 +52,23 @@ type Block struct {
 	Label       string           `json:"label"`
 	CWD         string           `json:"cwd"`
 	AgentResume *receipt.Receipt `json:"agent_resume,omitempty"`
+	Scrollback  *ScrollbackRef   `json:"scrollback,omitempty"`
+}
+
+// ScrollbackRef names the encrypted scrollback sidecar saved for a block: the
+// key that sealed it and its keyed content identity. The sidecar itself lives
+// outside the generation file.
+type ScrollbackRef struct {
+	KeyID    string `json:"key_id"`
+	ObjectID string `json:"object_id"`
+}
+
+func (r ScrollbackRef) Validate() error {
+	if _, err := scrollback.ParseKeyID(r.KeyID); err != nil {
+		return err
+	}
+	_, err := scrollback.ParseObjectID(r.ObjectID)
+	return err
 }
 
 type Split struct {
@@ -71,9 +90,17 @@ type Unsupported struct {
 }
 
 type Report struct {
-	Unsupported      []Unsupported     `json:"unsupported,omitempty"`
-	PrunedReceipts   []SourceID        `json:"pruned_receipts,omitempty"`
-	CWDSubstitutions []CWDSubstitution `json:"cwd_substitutions,omitempty"`
+	Unsupported       []Unsupported     `json:"unsupported,omitempty"`
+	PrunedReceipts    []SourceID        `json:"pruned_receipts,omitempty"`
+	CWDSubstitutions  []CWDSubstitution `json:"cwd_substitutions,omitempty"`
+	ScrollbackSkipped []ScrollbackSkip  `json:"scrollback_skipped,omitempty"`
+}
+
+// ScrollbackSkip records a shell block whose scrollback was deliberately not
+// saved, and why; its layout, cwd, and receipt are unaffected.
+type ScrollbackSkip struct {
+	BlockID SourceID `json:"block_source_id"`
+	Reason  string   `json:"reason"`
 }
 
 // CWDSubstitution records a capture that used home because the terminal had
@@ -152,6 +179,14 @@ func (s Snapshot) Inventory() (map[SourceID]string, error) {
 						}
 						if err := r.ValidateMetadata(); err != nil || r.SessionID != string(session.ID) || r.BlockID != string(b.ID) {
 							return fmt.Errorf("invalid agent receipt for block %s: %v", b.ID, err)
+						}
+					}
+					if ref := b.Scrollback; ref != nil {
+						if s.Version < 4 {
+							return fmt.Errorf("scrollback references require snapshot version 4")
+						}
+						if err := ref.Validate(); err != nil {
+							return fmt.Errorf("invalid scrollback reference for block %s: %w", b.ID, err)
 						}
 					}
 					if !filepath.IsAbs(b.CWD) || len(b.CWD) > 4096 || len(b.Label) > 4096 {
@@ -263,8 +298,9 @@ func normalize(s Snapshot, translate func(SourceID) SourceID) (Snapshot, error) 
 		if n.Block != nil {
 			b := *n.Block
 			b.ID = translate(b.ID)
-			// Receipts are opt-in replay metadata, not observable Rex topology.
+			// Receipts and scrollback are replay metadata, not observable Rex topology.
 			b.AgentResume = nil
+			b.Scrollback = nil
 			var err error
 			b.CWD, err = CanonicalCWD(b.CWD)
 			return Node{Block: &b}, err

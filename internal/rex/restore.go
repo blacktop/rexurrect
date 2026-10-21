@@ -48,10 +48,12 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 		return out, err
 	}
 	out = j.Status(e)
+	var scrollbackSkipped []snapshot.ScrollbackSkip
 	defer func() {
 		acknowledged := out.IDMap
 		out = j.Status(e)
 		maps.Copy(out.IDMap, acknowledged)
+		out.ScrollbackSkipped = scrollbackSkipped
 	}()
 
 	latest := j.Latest()
@@ -95,6 +97,15 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	if err := c.checkInstance(ctx, target); err != nil {
 		return out, err
 	}
+	// Scrollback replay is decided once, before any create, so a lost
+	// acknowledgement can never start a second replay for the same block.
+	var replay map[snapshot.SourceID]replayCommand
+	if slices.ContainsFunc(e.Snapshot.Sessions, func(session snapshot.Session) bool { return latest[session.ID].Outcome == "" }) {
+		replay, scrollbackSkipped, err = c.scrollbackReplay(ctx, store, store.Dir(), e)
+		if err != nil {
+			return out, err
+		}
+	}
 	for _, session := range e.Snapshot.Sessions {
 		r := latest[session.ID]
 		if r.Outcome == "complete" {
@@ -120,7 +131,7 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 			if err := c.checkInstance(ctx, target); err != nil {
 				return out, err
 			}
-			created, createErr := c.createSession(ctx, session, r.Marker)
+			created, createErr := c.createSession(ctx, session, r.Marker, replay)
 			if createErr != nil {
 				recordErr := store.Record(e, &j, session.ID, r.Marker, "uncertain", nil)
 				return out, errors.Join(fmt.Errorf("session.create outcome is uncertain; restore again to read back marker %s: %w", r.Marker, createErr), recordErr)

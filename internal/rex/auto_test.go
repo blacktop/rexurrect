@@ -33,8 +33,22 @@ func TestAutoUnchangedPrivateServer(t *testing.T) {
 	}
 	cycle("first_run", 0, 1, "")
 	before := savedFiles(t, dir)
+	// Files a failed scrollback prune left behind are removed by the next
+	// unchanged cycle, which otherwise changes nothing.
+	stale := filepath.Join(dir, "scrollback", strings.Repeat("ab", 16))
+	if err := os.MkdirAll(stale, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".tmp-leftover", strings.Repeat("0", 64) + ".rrsb"} {
+		if err := os.WriteFile(filepath.Join(stale, name), []byte("stale"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for range 2 {
 		cycle("same_instance", 1, 0, "unchanged")
+		if entries, err := os.ReadDir(stale); err != nil || len(entries) != 0 {
+			t.Fatalf("unchanged cycle left stale scrollback files: %v %v", entries, err)
+		}
 		if !reflect.DeepEqual(before, savedFiles(t, dir)) {
 			t.Fatal("unchanged cycle modified generation or pointer bytes")
 		}
@@ -276,7 +290,7 @@ func TestAutoCyclePrivateServerRecovery(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "saved")
 			saved, marker := prepareIntent(t, s.client, dir, e)
 			first, second := saved.Snapshot.Sessions[0], saved.Snapshot.Sessions[1]
-			created, err := s.client.createSession(t.Context(), first, marker)
+			created, err := s.client.createSession(t.Context(), first, marker, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

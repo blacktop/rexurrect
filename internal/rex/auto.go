@@ -18,18 +18,20 @@ const (
 )
 
 type AutoResult struct {
-	RexBinarySubstitution   *rexbin.Substitution       `json:"rex_binary_substitution,omitempty"`
-	State                   string                     `json:"state"`
-	Generation              uint64                     `json:"generation"`
-	HostID                  string                     `json:"host_id"`
-	InstanceID              string                     `json:"instance_id"`
-	RestoreOutcome          string                     `json:"restore_outcome"`
-	SavedGeneration         uint64                     `json:"saved_generation,omitempty"`
-	Reason                  string                     `json:"reason,omitempty"`
-	CWDSubstitutions        []state.CWDSubstitution    `json:"cwd_substitutions,omitempty"`
-	NotResumed              []state.AgentNotResumed    `json:"not_resumed,omitempty"`
-	PrunedReceipts          []snapshot.SourceID        `json:"pruned_receipts,omitempty"`
-	CaptureCWDSubstitutions []snapshot.CWDSubstitution `json:"capture_cwd_substitutions,omitempty"`
+	RexBinarySubstitution    *rexbin.Substitution       `json:"rex_binary_substitution,omitempty"`
+	State                    string                     `json:"state"`
+	Generation               uint64                     `json:"generation"`
+	HostID                   string                     `json:"host_id"`
+	InstanceID               string                     `json:"instance_id"`
+	RestoreOutcome           string                     `json:"restore_outcome"`
+	SavedGeneration          uint64                     `json:"saved_generation,omitempty"`
+	Reason                   string                     `json:"reason,omitempty"`
+	CWDSubstitutions         []state.CWDSubstitution    `json:"cwd_substitutions,omitempty"`
+	NotResumed               []state.AgentNotResumed    `json:"not_resumed,omitempty"`
+	ScrollbackSkipped        []snapshot.ScrollbackSkip  `json:"scrollback_skipped,omitempty"`
+	PrunedReceipts           []snapshot.SourceID        `json:"pruned_receipts,omitempty"`
+	CaptureCWDSubstitutions  []snapshot.CWDSubstitution `json:"capture_cwd_substitutions,omitempty"`
+	CaptureScrollbackSkipped []snapshot.ScrollbackSkip  `json:"capture_scrollback_skipped,omitempty"`
 }
 
 // AutoCycle holds the same nonblocking lock as manual save and restore for its
@@ -104,6 +106,7 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 			restored, restoreErr := c.restoreSaved(ctx, store, current.Envelope, target)
 			out.CWDSubstitutions = restored.CWDSubstitutions
 			out.NotResumed = restored.NotResumed
+			out.ScrollbackSkipped = restored.ScrollbackSkipped
 			if restored.Outcome != "" {
 				out.RestoreOutcome = restored.Outcome
 			}
@@ -123,6 +126,7 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 	out.SavedGeneration = saved.Generation
 	out.PrunedReceipts = saved.Report.PrunedReceipts
 	out.CaptureCWDSubstitutions = saved.Report.CWDSubstitutions
+	out.CaptureScrollbackSkipped = saved.Report.ScrollbackSkipped
 	if saved.Generation == 0 {
 		out.Reason = "unchanged"
 	}

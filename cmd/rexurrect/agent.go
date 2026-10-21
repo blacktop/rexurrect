@@ -45,6 +45,7 @@ func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	flags.DurationVar(&c.Timeout, "timeout", rex.DefaultAutoTimeout, "overall cycle deadline, at most 1h")
 	flags.DurationVar(&c.CallTimeout, "call-timeout", rex.DefaultCallTimeout, "per-attempt Rex deadline, at most 60s")
 	flags.Int64Var(&c.LogMaxBytes, "log-max-bytes", autolog.DefaultMaxBytes, "maximum bytes in each automatic log")
+	flags.BoolVar(&c.Scrollback, "scrollback", false, "save encrypted terminal scrollback in each automatic cycle")
 	plistDir := flags.String("plist-dir", "", "absolute LaunchAgents directory override for isolated tests")
 	jsonOutput := flags.Bool("json", false, "print machine-readable JSON")
 	if err := flags.Parse(args[1:]); err != nil {

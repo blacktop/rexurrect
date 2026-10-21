@@ -61,6 +61,9 @@ type JournalStatus struct {
 	MissingSessions  []snapshot.LiveID `json:"missing_sessions,omitempty"`
 	CWDSubstitutions []CWDSubstitution `json:"cwd_substitutions,omitempty"`
 	NotResumed       []AgentNotResumed `json:"not_resumed,omitempty"`
+	// ScrollbackSkipped is decided by the running restore, not recorded in
+	// the journal: an older generation's journal keeps its format.
+	ScrollbackSkipped []snapshot.ScrollbackSkip `json:"scrollback_skipped,omitempty"`
 }
 
 func NewOperationMarker() (string, error) {

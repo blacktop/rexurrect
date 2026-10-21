@@ -51,7 +51,7 @@ func main() {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(stdout, "Usage: rexurrect <save|restore|status|auto> --server unix://PATH --state-dir DIR [options]\n       rexurrect agent <install|enable|disable|uninstall|status> [options]\n       rexurrect receipt <set|clear|list> --server unix://PATH --state-dir DIR [options]\n       rexurrect version")
+		_, err := fmt.Fprintln(stdout, "Usage: rexurrect <save|restore|status|auto> --server unix://PATH --state-dir DIR [options]\n       rexurrect agent <install|enable|disable|uninstall|status> [options]\n       rexurrect receipt <set|clear|list> --server unix://PATH --state-dir DIR [options]\n       rexurrect scrollback replay --state-dir DIR --key-id ID --object-id ID --host ID --block ID\n       rexurrect version")
 		if len(args) == 0 {
 			return errors.New("a command is required")
 		}
@@ -71,6 +71,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if command == "receipt" {
 		return runReceipt(ctx, args[1:], stdout, stderr)
 	}
+	if command == "scrollback" {
+		return runScrollback(ctx, args[1:], stdout, stderr)
+	}
 	if command != "save" && command != "status" && command != "restore" && command != "auto" {
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -84,6 +87,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var generation uint64
 	var wait, timeout time.Duration
 	var logMaxBytes int64
+	var captureScrollback bool
+	if command == "save" || command == "auto" {
+		flags.BoolVar(&captureScrollback, "scrollback", false, "save encrypted terminal scrollback (key in the login keychain)")
+	}
 	if command == "save" {
 		flags.BoolVar(&allowEmpty, "allow-empty", false, "allow replacing nonempty saved state with an empty server")
 	} else {
@@ -113,7 +120,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err := rex.ValidateCallTimeout(*callTimeout); err != nil {
 		return err
 	}
-	client := rex.Client{Binary: *binary, Socket: socket, CallTimeout: *callTimeout}
+	client := rex.Client{Binary: *binary, Socket: socket, CallTimeout: *callTimeout, Scrollback: captureScrollback}
 	if command == "auto" {
 		var err error
 		stdout, err = autolog.Wrap(stdout, filepath.Join(*dir, autolog.OutName), logMaxBytes)

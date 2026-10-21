@@ -147,18 +147,32 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 	if err != nil {
 		return state.Envelope{}, err
 	}
+	if c.Scrollback {
+		// The publication guards run first so a refused save leaves no
+		// sidecar, state record, or keychain item behind.
+		if err := store.PublishGuards(captured, allowEmpty); err != nil {
+			return state.Envelope{}, err
+		}
+		if err := c.captureScrollback(ctx, store, &captured); err != nil {
+			return state.Envelope{}, err
+		}
+	}
 	if current != nil {
 		previous := current.Envelope
 		// Preserve the empty-server guard, including an explicitly saved empty
 		// current generation whose last-known-good is still nonempty.
 		emptyAllowed := len(captured.Snapshot.Sessions) != 0 || current.LastKnownGood == nil || len(current.LastKnownGood.Snapshot.Sessions) == 0
 		if previous.Generation != 0 && emptyAllowed && previous.HostID == captured.HostID && previous.InstanceID == captured.InstanceID && previous.RexVersion == captured.RexVersion && previous.Commit == captured.Commit && reflect.DeepEqual(previous.Snapshot, captured.Snapshot) && reflect.DeepEqual(previous.Report, captured.Report) {
-			// A prior publication may have succeeded before receipt pruning
-			// failed. Its matching durable report permits finishing that step.
+			// A prior publication may have succeeded before receipt or
+			// scrollback pruning failed. Its matching durable report permits
+			// finishing those steps.
 			if len(captured.Report.PrunedReceipts) != 0 {
 				if err := store.WriteReceipts(captured.HostID, kept); err != nil {
 					return state.Envelope{}, err
 				}
+			}
+			if err := store.PruneScrollback(); err != nil {
+				return state.Envelope{}, fmt.Errorf("pruning scrollback failed: %w", err)
 			}
 			return captured, nil // Generation zero means no publication.
 		}
@@ -166,6 +180,11 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 	saved, err := store.Publish(captured, allowEmpty)
 	if err == nil && len(captured.Report.PrunedReceipts) != 0 {
 		err = store.WriteReceipts(captured.HostID, kept)
+	}
+	if err == nil {
+		if pruneErr := store.PruneScrollback(); pruneErr != nil {
+			err = fmt.Errorf("generation %d was published, but pruning scrollback failed: %w", saved.Generation, pruneErr)
+		}
 	}
 	return saved, err
 }

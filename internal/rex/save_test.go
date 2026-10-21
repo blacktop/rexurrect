@@ -2,6 +2,7 @@ package rex
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,23 +15,41 @@ import (
 	"github.com/blacktop/rexurrect/internal/state"
 )
 
+// savedFiles maps every state file, by path relative to dir, to its content,
+// and fails on anything that is not a private file (0600) or directory (0700).
 func savedFiles(t *testing.T, dir string) map[string]string {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
+	out := make(map[string]string)
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != dir && info.Mode().Perm() != 0700 {
+				t.Fatalf("private directory %s: %v", path, info.Mode())
+			}
+			return nil
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("private file %s: %v", path, info.Mode())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		name, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		out[name] = string(data)
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	out := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil || info.Mode().Perm() != 0600 {
-			t.Fatalf("private file %s: %v %v", entry.Name(), info, err)
-		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		out[entry.Name()] = string(data)
 	}
 	return out
 }

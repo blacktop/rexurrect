@@ -295,3 +295,29 @@ func TestEmptyAndHostGuards(t *testing.T) {
 		t.Fatalf("empty save discarded nonempty last-known-good: %v", err)
 	}
 }
+
+func TestPublishGuards(t *testing.T) {
+	s := openStore(t)
+	if err := s.PublishGuards(fixture(), false); err != nil {
+		t.Fatalf("empty store: %v", err)
+	}
+	if _, err := s.Publish(fixture(), false); err != nil {
+		t.Fatal(err)
+	}
+	other := fixture()
+	other.HostID = "other-host"
+	if err := s.PublishGuards(other, false); err == nil || !strings.Contains(err.Error(), "different Rex host") {
+		t.Fatalf("other host: %v", err)
+	}
+	empty := fixture()
+	empty.Snapshot.Sessions = nil
+	if err := s.PublishGuards(empty, false); err == nil || !strings.Contains(err.Error(), "--allow-empty") {
+		t.Fatalf("empty over nonempty: %v", err)
+	}
+	if err := s.PublishGuards(empty, true); err != nil {
+		t.Fatalf("allowed empty: %v", err)
+	}
+	if err := s.PublishGuards(fixture(), false); err != nil {
+		t.Fatalf("same host: %v", err)
+	}
+}

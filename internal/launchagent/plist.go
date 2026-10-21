@@ -25,6 +25,7 @@ type Config struct {
 	ResolvedRex                              string // Optional path already resolved by the command.
 	Interval, Wait, Timeout, CallTimeout     time.Duration
 	LogMaxBytes                              int64
+	Scrollback                               bool // Pass --scrollback to each automatic cycle.
 }
 
 func validLabel(label string) bool {
@@ -98,6 +99,9 @@ func Render(c Config) ([]byte, error) {
 		return errors.Join(enc.EncodeElement(key, xml.StartElement{Name: xml.Name{Local: "key"}}), encodePlistValue(enc, &b, plistValue{XMLName: xml.Name{Local: kind}, Text: value, Strings: items}))
 	}
 	args := []string{c.Executable, "auto", "--server", c.Server, "--state-dir", c.StateDir, "--rex", c.Rex, "--wait", c.Wait.String(), "--timeout", c.Timeout.String(), "--call-timeout", c.CallTimeout.String(), "--log-max-bytes", strconv.FormatInt(c.LogMaxBytes, 10)}
+	if c.Scrollback {
+		args = append(args, "--scrollback")
+	}
 	for _, e := range []struct{ key, kind, value string }{
 		{"Label", "string", c.Label},
 		{"RexResurrectManaged", "string", "1"},

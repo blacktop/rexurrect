@@ -202,19 +202,23 @@ results take precedence over the general [Rex documentation](https://www.superlo
 
 ## Snapshot versions
 
-Generations written by this version use snapshot version 3. Version 1
-generations and journals written by `8974b2e` and version 2 generations written
-by v0.1.0 (`58c87d7`) still load and restore; the generation envelope, pointer,
-and journal binding formats remain unchanged. Agent receipts and
-receipt-pruning reports belong to snapshot v2; the host and command receipt
-form belongs to v3. Publishing upgrades an older snapshot in place without
-changing what any of its receipts replay.
+Generations written by this version use snapshot version 4. Version 1
+generations and journals written by `8974b2e`, version 2 generations written
+by v0.1.0 (`58c87d7`), and version 3 generations written by v0.1.1 still load
+and restore; the generation envelope, pointer, and journal binding formats
+remain unchanged. Agent receipts and receipt-pruning reports belong to
+snapshot v2; the host and command receipt form belongs to v3; encrypted
+scrollback references and the `scrollback_skipped` report belong to v4.
+Publishing upgrades an older snapshot in place without changing what any of
+its receipts replay.
 
 Downgrading cannot read newer generations and fails closed. The `8974b2e`
 reader rejects every v2 shape; `TestSnapshotV1Compatibility` compiles that exact
 reader and writer and checks `status`, `restore`, and `auto` preserve every
-state file byte for byte. The v0.1.0 reader rejects v3 generations the same way
-(`TestReleasedReaderCompatibility`). The transitional state is the exception:
+state file byte for byte. The v0.1.0 reader rejects v3 and v4 generations the same way: a v4 generation
+with a scrollback reference fails on the unknown `scrollback` field, one
+without on the version (`TestReleasedReaderCompatibility`). The `scrollback/`
+directory and its pins are ignored by older readers' generation pruning. The transitional state is the exception:
 a v0.1.0 generation beside a format 2 `receipts.json`, which exists as soon as a
 hook registers after the upgrade and before the first v3 save. v0.1.0 `status`
 still works on that state and `receipt list` fails on the unknown field, but
@@ -731,6 +735,86 @@ harness in the durable journal, receipt rebinding and clearing, mapped topology,
 and an inert second restore. Its
 real login-shell gate must run outside the agent sandbox:
 `go test ./internal/rex -run TestAgentResumeRoundTrip -count=1 -v`.
+
+## Encrypted scrollback (S4)
+
+`save --scrollback` and `auto --scrollback` (both off by default) capture each
+shell block's earlier output and replay it above the restored prompt. Nothing
+about layout, cwd, or receipts depends on it: every failure below is a
+per-block skip recorded in `report.scrollback_skipped` (and
+`capture_scrollback_skipped` in the automatic result), never a failed save.
+A failed terminal read or sidecar write is a skip too (`scrollback read: …`,
+`scrollback sidecar: …`); only the save's own cancellation stops a capture. An
+empty capture provisions no key, and the publication guards (same host, empty
+snapshot over nonempty history) run before any scrollback state is written.
+
+Capture, per block: `terminal.modes` must report the primary screen, then
+`terminal.format` with `format: "vt", unwrap: true` (no `extra_*` flags), then
+`modes` again; a block on the alternate screen at either read is skipped.
+Rex's `code=too_large` response (its 1 MiB cap) is a skip, parsed from the
+CLI's trailing `(status=NNN code=xxx)` pair. The output is sanitized to the
+replayable subset measured in the contract probe: printable UTF-8, CR, LF, and
+`ESC [ … m`. Every other escape sequence, control byte, and C1 character is
+dropped. Empty output, more than 1 MiB per block, and more than 32 MiB per
+generation are skips. Capture is sequential.
+
+Storage: the sanitized bytes are zlib-compressed and encrypted with AES-256-GCM
+under a key derived (HKDF-SHA256, random 32-byte salt) from a per-state-store
+master key; the 92-byte header (`RRSBLOB1`, key ID, object ID, salt, plaintext
+length) and a binding of state ID, Rex host ID, and source block ID are
+authenticated. The object ID is an HMAC over binding and plaintext with a
+separate derived key, so an unchanged block reuses its sidecar (after
+authenticating it) instead of sealing a new one, without publishing a plain
+content hash. Sidecars are immutable files
+`scrollback/<key_id>/<object_id>.rrsb` (0600 in 0700 directories, ciphertext
+in the temporary file too). No plaintext scrollback is ever written to disk.
+
+Key lifecycle: the master key lives in the login keychain under service
+`io.blacktop.rexurrect.scrollback.<key_id>`, written through `security -i` on
+stdin and read with `find-generic-password -w`, each call bounded by a 3 s
+deadline; a locked keychain prompts and blocks, so a timeout is "key
+unavailable", not an error. `scrollback/state.json` holds the nonsecret state
+ID, key ID, and a `pending`/`ready` status. Provisioning writes `pending`,
+creates the item, then `ready`; a `pending` record whose item exists is
+finalized. A `ready` key missing from the keychain is reported
+(`scrollback key missing from the keychain`) and never regenerated. A backup
+of the state directory does not contain the key.
+
+Retention: after each publication, sidecars not referenced by the current
+generation, the last known good one, or an unexpired pin are deleted, along
+with temporary files; an unchanged automatic cycle repeats the pruning, so a
+prune that failed after a publication is retried. `scrollback/`,
+`scrollback/<key_id>/`, and `scrollback/pins/` must each be a real private
+directory (mode 0700); a symlink or a shared mode refuses the write or the
+prune rather than following it. Restore pins the references it is about to
+replay (`scrollback/pins/<generation>`, listing them) before its first create
+intent;
+pins expire after one hour and are not released earlier, because the restored
+shells read their sidecars at startup, which no journal record observes.
+
+Replay: before any session is created, restore loads the key and authenticates
+every referenced sidecar; blocks that fail are restored as plain shells and
+listed in the restore result's `scrollback_skipped`. If the pin cannot be
+written, every replay is skipped (`scrollback pin: …`) and plain shells are
+restored. A block that passes is
+created with `shell: "none"`, `login: false`, and a command that prints the
+decrypted bytes and then starts Rex's own login chain
+(`login -flp USER /bin/bash --noprofile --norc -c 'name=$1; shift; exec -a "-$name" -- "$@"' rex-login SHELL PATH`,
+with the shell read from the directory service), so startup files run once as
+a login shell, the `Last login:` banner separates old output from new, and the
+agent `initial_input` is typed unchanged. The decryptor is
+`rexurrect scrollback replay --state-dir DIR --key-id ID --object-id ID --host ID --block ID`;
+it reads without the state lock (sidecars are immutable and pinned), writes
+to the terminal only after the whole blob authenticates, and writes nothing on
+any failure, so the shell starts either way. Replay is decided once per
+restore, so a lost acknowledgement cannot replay a block twice.
+
+`TestScrollbackCaptureAndReplayPrivateServer` runs this against a private Rex
+server with a file-backed keychain stand-in: capture with an alternate-screen
+skip, sidecar reuse on an unchanged save, replay through the login chain with
+the agent command typed once and the replayed text never executed, and the
+missing-key degradation. `REXURRECT_SECURITY_TOOL` substitutes the security
+tool for that test only.
 
 ## Per-user LaunchAgent (S2b)
 
