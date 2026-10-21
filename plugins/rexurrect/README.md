@@ -138,6 +138,21 @@ markers in that session's tool shells through `CLAUDE_ENV_FILE`. Codex's
 payload supplies its model but no effort, so replay uses the account's effort
 default.
 
+## omp
+
+omp needs no launcher. `omp/rexurrect.ts` is an omp extension; symlink or copy
+it into omp's extension directory:
+
+```sh
+ln -s /path/to/rexurrect/plugins/rexurrect/omp/rexurrect.ts "$HOME/.omp/agent/extensions/rexurrect.ts"
+```
+
+In a Rex pane, the interactive main session registers its receipt on start,
+switch, and branch, and clears it on exit; subagents and `omp -p` do not. After
+a restart, rexurrect types `omp --resume <session-id>`. The installed
+`rexurrect` must accept `--host omp`, and `omp` must resolve in your login
+shell.
+
 ## Check the result
 
 Run the packaged `setup` skill for a guided installation or the `status` skill

@@ -34,6 +34,8 @@ func wantInput(host, name string, optional bool) string {
 		if optional {
 			want += ` -m model-1.2 -c model_reasoning_effort="high"`
 		}
+	case "omp":
+		want = name + " --resume " + testConversation
 	default:
 		return ""
 	}
@@ -44,8 +46,12 @@ func TestInitialInputByHost(t *testing.T) {
 	for _, tc := range []struct{ host, command string }{
 		{"claude", "claude"}, {"claude", "claude-work"}, {"claude", "my_claude.v2"},
 		{"codex", "codex"}, {"codex", "codex-work"}, {"codex", "Codex_Team"},
+		{"omp", "omp"}, {"omp", "omp-work"},
 	} {
 		for _, optional := range []bool{false, true} {
+			if tc.host == "omp" && optional {
+				continue // omp takes no model or effort
+			}
 			r := commandReceipt(tc.host, tc.command)
 			if !optional {
 				r.Model, r.Effort = "", ""
@@ -53,6 +59,22 @@ func TestInitialInputByHost(t *testing.T) {
 			if got, want := r.InitialInput(), wantInput(tc.host, tc.command, optional); got != want {
 				t.Errorf("%s %s optional=%t: %q, want %q", tc.host, tc.command, optional, got, want)
 			}
+		}
+	}
+}
+
+func TestInitialInputOmp(t *testing.T) {
+	valid := commandReceipt("omp", "omp")
+	valid.Model, valid.Effort = "", ""
+	valid.Conversation = "01a15c18-8aae-7774-8c25-1eb59ff7f355"
+	if got, want := valid.InitialInput(), "omp --resume "+valid.Conversation+"\n"; got != want {
+		t.Errorf("InitialInput(%+v) = %q, want %q", valid, got, want)
+	}
+	for _, mutate := range []func(*Receipt){func(r *Receipt) { r.Model = "m" }, func(r *Receipt) { r.Effort = "high" }} {
+		r := valid
+		mutate(&r)
+		if r.Validate() == nil {
+			t.Errorf("Validate(%+v) = nil, want error", r)
 		}
 	}
 }

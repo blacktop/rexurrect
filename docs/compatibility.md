@@ -518,10 +518,11 @@ are still read. The array has at most 1024 entries; the file is limited to
 ```
 
 The key is the full Rex `session:UUID` and `block:UUID` pair. `host` is the
-agent type, `codex` or `claude`, and selects the resume syntax. `command` is
-the exact command name the launcher was started as and the word rexurrect
-types; it matches `[A-Za-z_][A-Za-z0-9_.-]{0,63}`, so it is a bare word with
-no spaces, metacharacters, or leading dash. Reserved shell words are excluded.
+agent type, `codex`, `claude`, or `omp`, and selects the resume syntax.
+`command` is the exact command name the launcher was started as and the word
+rexurrect types; it matches `[A-Za-z_][A-Za-z0-9_.-]{0,63}`, so it is a bare
+word with no spaces, metacharacters, or leading dash. Reserved shell words are
+excluded.
 Conversation IDs must be UUIDs.
 Optional models match `[a-z][a-z0-9]*([.-][a-z0-9]+)*` and have at most 128
 bytes. Optional effort is `low`, `medium`, `high`, or `xhigh`. Registration
@@ -558,6 +559,7 @@ that field was not recorded.
 | --- | --- |
 | `claude` | `NAME --resume UUID --model M --effort E` |
 | `codex` | `NAME resume UUID -m M -c model_reasoning_effort="E"` |
+| `omp` | `NAME --resume UUID` (no model or effort) |
 
 Reserved words in bash, zsh, and fish are rejected as command names. Legacy
 entries retain their original command text; manual-only and unknown legacy

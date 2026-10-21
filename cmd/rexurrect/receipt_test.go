@@ -138,6 +138,19 @@ esac
 	if err != nil || string(data) != "[]\n" {
 		t.Fatalf("clear/list: %s %v", data, err)
 	}
+	ompSet := []string{"--session", session, "--block", block, "--host", "omp", "--command", "omp", "--conversation", conversation}
+	if _, err := invoke("set", ompSet...); err != nil {
+		t.Fatalf("omp set: %v", err)
+	}
+	data, err = invoke("list", "--json", "--session", session)
+	want = []receipt.Receipt{{SessionID: session, BlockID: block, Host: "omp", Command: "omp", Conversation: conversation}}
+	entries = nil
+	if err != nil || json.Unmarshal(data, &entries) != nil || !reflect.DeepEqual(entries, want) {
+		t.Fatalf("omp set/list: %s %v", data, err)
+	}
+	if _, err := invoke("clear", "--session", session, "--block", block, "--command", "omp", "--conversation", conversation); err != nil {
+		t.Fatal(err)
+	}
 	legacy := append(append([]string{}, key...), "--harness", "codex", "--conversation", conversation)
 	if _, err := invoke("set", legacy...); err != nil {
 		t.Fatalf("released set flags: %v", err)

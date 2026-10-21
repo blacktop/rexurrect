@@ -61,7 +61,7 @@ func ValidBlockID(id string) bool        { return validRexID(id, "block:") }
 func ValidConversationID(id string) bool { return uuid(id) }
 
 // ValidHost reports whether host names an agent type rexurrect can replay.
-func ValidHost(host string) bool { return host == "codex" || host == "claude" }
+func ValidHost(host string) bool { return host == "codex" || host == "claude" || host == "omp" }
 
 // ValidCommand reports whether name is a bare command word safe to type in
 // bash, zsh, or fish. Quoting does not disable keyword parsing in fish.
@@ -161,7 +161,9 @@ func (r Receipt) validateForm() error {
 	case r.Host == "" && r.Command == "":
 		return errors.New("receipt requires a host and command")
 	case !ValidHost(r.Host):
-		return errors.New("receipt host must be codex or claude")
+		return errors.New("receipt host must be codex, claude, or omp")
+	case r.Host == "omp" && (r.Model != "" || r.Effort != ""):
+		return errors.New("receipt host omp does not take a model or effort")
 	case !ValidCommand(r.Command):
 		return errors.New("receipt command must be a nonreserved command name of at most 64 bytes")
 	}
@@ -225,6 +227,8 @@ func (r Receipt) InitialInput() string {
 		if r.Effort != "" {
 			command += " --effort " + r.Effort
 		}
+	case "omp":
+		command += " --resume " + r.Conversation
 	case "codex":
 		command += " resume " + r.Conversation
 		if r.Model != "" {

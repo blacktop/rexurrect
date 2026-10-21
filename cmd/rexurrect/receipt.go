@@ -38,11 +38,11 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 	if action == "set" {
 		flags.StringVar(&r.Conversation, "conversation", "", "conversation UUID")
-		flags.StringVar(&r.Host, "host", "", "agent type: codex or claude")
+		flags.StringVar(&r.Host, "host", "", "agent type: codex, claude, or omp")
 		flags.StringVar(&r.Command, "command", "", "command name typed to resume, at most 64 bytes")
 		flags.StringVar(&r.Harness, "harness", "", "legacy receipt name; use --host and --command")
-		flags.StringVar(&r.Model, "model", "", "optional model token")
-		flags.StringVar(&r.Effort, "effort", "", "optional low, medium, high, or xhigh")
+		flags.StringVar(&r.Model, "model", "", "optional model token (not valid for omp)")
+		flags.StringVar(&r.Effort, "effort", "", "optional low, medium, high, or xhigh (not valid for omp)")
 	}
 	if action == "clear" {
 		flags.StringVar(&guard.Conversation, "conversation", "", "optional conversation UUID guard")
