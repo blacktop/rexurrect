@@ -2,6 +2,7 @@ package rex
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/blacktop/rexurrect/internal/keychain/keychaintest"
 	"github.com/blacktop/rexurrect/internal/snapshot"
 	"github.com/blacktop/rexurrect/internal/state"
 )
@@ -171,6 +173,50 @@ func TestSaveStatusPrivateServer(t *testing.T) {
 		t.Fatalf("explicit empty save lost last good: %+v", current)
 	}
 	t.Logf("published generations 1, 2, and explicit empty 3; %d sessions, %d windows, %d blocks, %d unsupported", status.Sessions, status.Windows, status.Blocks, status.Unsupported)
+}
+
+func TestSaveScrollbackGuardsBeforeCapturePrivateServer(t *testing.T) {
+	fake := keychaintest.New(t, ScrollbackKeychainService)
+	s := newIsolatedServer(t)
+	mustCall(t, s.client, "session.create", map[string]any{"initial_windows": []createWindow{{
+		Layout: createNode{Block: &createBlock{Flavor: shellFlavor,
+			Options: shellOptions{Shell: "/bin/sh", Login: new(bool), CWD: s.root}}},
+	}}}, nil)
+	captured, err := s.client.stableCapture(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.Snapshot.Sessions) != 1 || len(captured.Snapshot.Sessions[0].Blocks()) != 1 {
+		t.Fatalf("capture has no shell block: %+v", captured.Snapshot)
+	}
+	captured.HostID = "other-" + captured.HostID
+	dir := filepath.Join(s.root, "saved")
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, publishErr := store.Publish(captured, false)
+	if err := errors.Join(publishErr, store.Close()); err != nil {
+		t.Fatal(err)
+	}
+	before := savedFiles(t, dir)
+	if _, exists := before["receipts.json"]; exists {
+		t.Fatal("fixture must have no receipt store")
+	}
+	c := s.client
+	c.Scrollback, c.Keychain = true, fake.Store
+	if saved, err := c.Save(t.Context(), dir, false); err == nil || !strings.Contains(err.Error(), "different Rex host") || saved.Generation != 0 {
+		t.Fatalf("wrong-host save: %+v %v", saved, err)
+	}
+	if !reflect.DeepEqual(savedFiles(t, dir), before) {
+		t.Error("refused save changed the state directory")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "scrollback")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("refused save created scrollback state: %v", err)
+	}
+	if items, err := os.ReadDir(fake.Items); err != nil || len(items) != 0 {
+		t.Errorf("refused save provisioned a key: %v %v", items, err)
+	}
 }
 
 func TestSaveRetriesStructuralRevision(t *testing.T) {
