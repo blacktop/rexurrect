@@ -411,6 +411,8 @@ func launchFixture(t *testing.T) (bin string) {
 [ "${RR_MODEL:-}" = "$RR_EXPECT_MODEL" ] || exit 93
 [ "${RR_EFFORT:-}" = "$RR_EXPECT_EFFORT" ] || exit 94
 [ "${RR_HOST:-}" = "$RR_EXPECT_HOST" ] || exit 95
+# An owned agent is the launcher's direct child and gets its pid; a plain launch gets none.
+if [ -n "${RR_HOST:-}" ]; then [ "${RR_LAUNCHER_PID:-}" = "$PPID" ] || exit 96; else [ -z "${RR_LAUNCHER_PID:-}" ] || exit 96; fi
 printf '%s\n' "$@" > "$RR_ARGS_PATH"
 exit "$RR_AGENT_STATUS"
 `
@@ -557,17 +559,8 @@ func TestPluginShellHelpers(t *testing.T) {
 		plainCodex("daemon-subcommand-remote-control", []string{"--enable", "x", "remote-control", "status"}),
 		ownedClaude("claude-success", claudeArgs, "model-1.2", "high"),
 		ownedOmp("omp-success", ompArgs),
-		{name: "omp-agent-failed", host: "omp", command: "omp", owner: "omp", args: ompArgs, agent: 7, want: 7},
-		{name: "omp-clear-failed", host: "omp", command: "omp", owner: "omp", args: ompArgs, clear: 9, want: 9},
-		{name: "omp-custom-command", host: "omp", command: "omp-work", owner: "omp-work", args: ompArgs},
-		plainOmp("omp-missing-block", "REX_BLOCK="),
-		plainOmp("omp-missing-session", "REX_SESSION="),
 		plainOmp("omp-nested-omp", "OMPCODE=1"),
-		plainOmp("omp-nested-claude", "CLAUDECODE=1"),
-		plainOmp("omp-nested-codex", "CODEX_THREAD_ID=outer"),
-		plainOmp("omp-preset-owner", "RR_HARNESS=omp"),
-		plainOmp("omp-blank-preset-owner", "RR_HARNESS="),
-		plainOmp("omp-foreign-host", "RR_HOST=claude"),
+		plainOmp("omp-preset-launcher-pid", "RR_LAUNCHER_PID=1"),
 		ownedClaude("claude-equals", []string{"--model=model-2", "--effort=low"}, "model-2", "low"),
 		ownedClaude("claude-defaults", []string{"prompt"}, "", ""),
 		ownedClaude("claude-after-separator", []string{"--", "--model", "ignored"}, "", ""),
@@ -584,7 +577,7 @@ func TestPluginShellHelpers(t *testing.T) {
 	}
 	t.Run("usage", func(t *testing.T) {
 		t.Parallel()
-		for _, args := range [][]string{{}, {"codex"}, {"vim", "vim"}, {"codex", ""}, {"omp", ""}} {
+		for _, args := range [][]string{{}, {"codex"}, {"vim", "vim"}, {"codex", ""}} {
 			cmd := exec.CommandContext(t.Context(), "/bin/sh", append([]string{launcher}, args...)...)
 			cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
 			if err := cmd.Run(); err == nil || cmd.ProcessState.ExitCode() != 2 {

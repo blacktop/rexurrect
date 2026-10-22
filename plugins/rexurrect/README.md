@@ -88,12 +88,14 @@ syntax rexurrect types.
 
 What the launcher does:
 
-- Exports `RR_HOST` (the agent type) and `RR_HARNESS` (the command name) to
-  the agent so the hooks can prove which pane owns the conversation. Any
-  marker already present, even empty, means a launcher or agent session is
-  above this one; so does `CLAUDECODE`, `CODEX_THREAD_ID`, or `OMPCODE`, which
-  Claude Code, Codex, and omp put in their tool shells. Such launches and
-  launches outside a Rex pane run the agent directly with both markers blank.
+- Exports `RR_HOST` (the agent type), `RR_HARNESS` (the command name), and
+  `RR_LAUNCHER_PID` (its own pid, so the agent can tell that it is the
+  launcher's direct child) to the agent so the hooks can prove which pane owns
+  the conversation. Any marker already present, even empty, means a launcher or
+  agent session is above this one; so does `CLAUDECODE`, `CODEX_THREAD_ID`, or
+  `OMPCODE`, which Claude Code, Codex, and omp put in their tool shells. Such
+  launches and launches outside a Rex pane run the agent directly with all
+  markers blank.
 - Inside Rex, starts Codex with `--no-daemon`. The shared Codex app-server
   daemon outlives a pane, runs hooks with its own environment, and does not end
   a thread when the pane closes, so a daemon-attached session can never be
@@ -123,9 +125,9 @@ unix://$HOME/Library/Application Support/rex/server.sock
 $HOME/Library/Application Support/rexurrect
 ```
 
-Do not set `RR_HOST` or `RR_HARNESS` globally: they belong to one foreground
-agent invocation. Concurrent foreground launches in the same Rex block are not
-supported.
+Do not set `RR_HOST`, `RR_HARNESS`, or `RR_LAUNCHER_PID` globally: they belong
+to one foreground agent invocation. Concurrent foreground launches in the same
+Rex block are not supported.
 
 Foreground Codex sessions are not live tasks in the shared `codex agents`
 view. Closing the session ends its local process; its saved conversation can
@@ -144,24 +146,23 @@ default.
 
 ## omp
 
-omp registers through an extension instead of hooks, and uses the launcher above
-for ownership: define the `omp` function (`rexurrect.sh` or `omp.fish`) and keep
-`rexurrect-launch` on your PATH. Then symlink or copy the extension into omp's
-extension directory:
+omp registers through an extension instead of hooks, and takes ownership from
+the launcher: define the `omp` function (`rexurrect.sh` or `omp.fish`), then
+symlink or copy the extension into omp's extension directory:
 
 ```sh
 ln -s /path/to/rexurrect/plugins/rexurrect/omp/rexurrect.ts "$HOME/.omp/agent/extensions/rexurrect.ts"
 ```
 
-Inside a Rex pane started through the launcher, the interactive main session
-registers its receipt once the conversation is saved to disk (after its first
-reply, and again whenever the session changes), so a restart never resumes a
-conversation that does not exist. It clears the receipt on exit, and the
-launcher clears again after omp exits if that was missed. Subagents, `omp -p`,
-and an `omp` started from an agent's tool shell never touch the pane's receipt.
-After a restart, rexurrect types `omp --resume <session-id>`. The installed
-`rexurrect` must accept `--host omp`, and `omp` must resolve in your login
-shell.
+The interactive main session registers its receipt once the conversation is
+saved to disk (after its first reply, and again whenever the session changes),
+so a restart never resumes a conversation that does not exist. Only the process
+the launcher started registers: subagents, `omp -p`, and any other omp that
+inherits the pane, such as one started from an agent's tool shell or an
+editor, never touch the receipt. On exit the extension aborts a registration
+still waiting for the receipt lock and clears the receipt; the launcher clears
+again after omp exits if that was missed. After a restart, rexurrect types
+`omp --resume <session-id>`.
 
 ## Check the result
 

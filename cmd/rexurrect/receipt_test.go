@@ -143,10 +143,16 @@ esac
 		t.Fatalf("omp set: %v", err)
 	}
 	data, err = invoke("list", "--json", "--session", session)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want = []receipt.Receipt{{SessionID: session, BlockID: block, Host: "omp", Command: "omp", Conversation: conversation}}
 	entries = nil
-	if err != nil || json.Unmarshal(data, &entries) != nil || !reflect.DeepEqual(entries, want) {
-		t.Fatalf("omp set/list: %s %v", data, err)
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(entries, want) {
+		t.Fatalf("omp list = %+v, want %+v", entries, want)
 	}
 	if _, err := invoke("clear", "--session", session, "--block", block, "--command", "omp", "--conversation", conversation); err != nil {
 		t.Fatal(err)
