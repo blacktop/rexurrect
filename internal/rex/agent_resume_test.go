@@ -295,6 +295,7 @@ func TestReceiptRebindingPreservesLiveSources(t *testing.T) {
 
 func TestAgentResumeRoundTrip(t *testing.T) {
 	requireLoginShell(t)
+	fish := requireFish(t)
 	var marker, exited string
 	s := newIsolatedServerWithSetup(t, func(s *isolatedServer) {
 		marker = filepath.Join(s.root, "agent-argv")
@@ -303,11 +304,8 @@ func TestAgentResumeRoundTrip(t *testing.T) {
 		// Rex resolves the login shell with dscl and falls back to $SHELL when
 		// the directory service stalls, which happens for a second or two
 		// after the first server's shells exit. The functions below exist only
-		// for fish, so the fallback has to be fish; the harness default is sh.
-		fish, err := exec.LookPath("fish")
-		if err != nil {
-			t.Fatal(err)
-		}
+		// for fish, so the fallback has to be fish. This later SHELL entry wins
+		// over the harness's default of /bin/sh.
 		s.client.Env = append(s.client.Env, "SHELL="+fish)
 		for _, path := range []string{marker, exited} {
 			if err := os.WriteFile(path, nil, 0600); err != nil {
@@ -327,13 +325,13 @@ func TestAgentResumeRoundTrip(t *testing.T) {
 			for name, host := range map[string]string{"claude-work": "claude", "codex-work": "codex", "omp-work": "omp", "claude-team": "", "future-agent": ""} {
 				// omp resumes by conversation alone; claude and codex also carry
 				// a model and an effort.
-				parseEffort, metadata := "    set -l rr_effort (string replace 'model_reasoning_effort=' '' -- $argv[6])\n", ` --model "$argv[4]" --effort "$rr_effort"`
+				metadata := ` --model "$argv[4]" --effort (string replace 'model_reasoning_effort=' '' -- $argv[6])`
 				if host == "omp" {
-					parseEffort, metadata = "", ""
+					metadata = ""
 				}
 				body := fmt.Sprintf(`function %[1]s
     set -l rr_id $argv[2]
-%[9]s    '%[2]s' receipt set --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --host %[8]s --command %[1]s --conversation "$rr_id"%[10]s
+    '%[2]s' receipt set --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --host %[8]s --command %[1]s --conversation "$rr_id"%[9]s
     or return
     printf '%%s\t%%s\t%%s\t%%s\n' "$REX_SESSION" "$REX_BLOCK" (pwd -P) (string join \t -- %[1]s $argv) >> '%[6]s'
     read -l rr_wait; or return
@@ -341,7 +339,7 @@ func TestAgentResumeRoundTrip(t *testing.T) {
     or return
     printf '%%s\n' "$REX_BLOCK" >> '%[7]s'
 end
-`, name, binary, s.client.Socket, filepath.Join(s.root, "saved"), s.client.Binary, marker, exited, host, parseEffort, metadata)
+`, name, binary, s.client.Socket, filepath.Join(s.root, "saved"), s.client.Binary, marker, exited, host, metadata)
 				if host == "" {
 					body = fmt.Sprintf("function %[1]s\n    printf 'unexpected %[1]s\\n' >> '%[2]s'\nend\n", name, marker)
 				}
@@ -391,18 +389,19 @@ end
 	if err := os.Mkdir(cwd, 0700); err != nil {
 		t.Fatal(err)
 	}
-	// Three live command-form registrations, one legacy inert receipt
-	// (claude-team never resumed under store format 1 and must stay that
-	// way), and one legacy receipt crafted to an unknown future name. Rex
-	// allows four windows per session, so omp-work shares the codex-work window.
-	harnesses := []string{"claude-work", "codex-work", "claude-team", "future-agent", "omp-work"}
-	live := []int{0, 1, 4}
+	// Live command-form registrations come first, then one legacy inert
+	// receipt (claude-team never resumed under store format 1 and must stay
+	// that way), and one legacy receipt crafted to an unknown future name.
+	// Rex allows four windows per session, so omp-work shares the codex-work
+	// window.
+	harnesses := []string{"claude-work", "codex-work", "omp-work", "claude-team", "future-agent"}
+	const liveAgents = 3
 	sourceArgs := [][]string{
 		{"claude-work", "--resume", agentReceipt(1, "").Conversation, "--model", "model-1.2", "--effort", "high"},
 		{"codex-work", "resume", agentReceipt(2, "").Conversation, "-m", "model-1.2", "-c", "model_reasoning_effort=high"},
+		{"omp-work", "--resume", agentReceipt(3, "").Conversation},
 		nil,
 		nil,
-		{"omp-work", "--resume", agentReceipt(5, "").Conversation},
 	}
 	leaf := func(i int) createNode {
 		var input string
@@ -411,21 +410,23 @@ end
 		}
 		return createNode{Block: &createBlock{Flavor: shellFlavor, Label: harnesses[i], Options: shellOptions{CWD: cwd, InitialInput: input}}}
 	}
-	var windows []createWindow
-	for i, h := range harnesses[:4] {
-		node := leaf(i)
-		if h == "codex-work" {
-			node = createNode{Split: &createSplit{Direction: "horizontal", Ratio: 0.5, Before: node, After: leaf(4)}}
-		}
-		windows = append(windows, createWindow{Label: h, Layout: node})
+	windows := []createWindow{
+		{Label: "claude-work", Layout: leaf(0)},
+		{Label: "codex-work", Layout: createNode{Split: &createSplit{Direction: "horizontal", Ratio: 0.5, Before: leaf(1), After: leaf(2)}}},
+		{Label: "claude-team", Layout: leaf(3)},
+		{Label: "future-agent", Layout: leaf(4)},
 	}
 	var created createdSession
 	mustCall(t, s.client, "session.create", map[string]any{"label": "agents", "initial_windows": windows}, &created)
-	if len(created.Windows) != len(windows) || len(created.Windows[0].Blocks) != 1 || len(created.Windows[1].Blocks) != 2 || len(created.Windows[2].Blocks) != 1 || len(created.Windows[3].Blocks) != 1 {
-		t.Fatalf("create: %+v", created)
+	var blocks []snapshot.LiveID
+	var perWindow []int
+	for _, w := range created.Windows {
+		blocks = append(blocks, w.Blocks...)
+		perWindow = append(perWindow, len(w.Blocks))
 	}
-	// blocks follows harnesses: omp-work is the second pane of window 1.
-	blocks := []snapshot.LiveID{created.Windows[0].Blocks[0], created.Windows[1].Blocks[0], created.Windows[2].Blocks[0], created.Windows[3].Blocks[0], created.Windows[1].Blocks[1]}
+	if !slices.Equal(perWindow, []int{1, 2, 1, 1}) {
+		t.Fatalf("blocks per window: %v, want [1 2 1 1]: %+v", perWindow, created)
+	}
 	dir := filepath.Join(s.root, "saved")
 	var initial []string
 	for i, h := range harnesses {
@@ -446,7 +447,7 @@ end
 			}
 			continue
 		}
-		initial = append(initial, strings.Join(append([]string{string(created.ID), string(block), cwd}, sourceArgs[i]...), "\t"))
+		initial = append(initial, strings.Join(slices.Concat([]string{string(created.ID), string(block), cwd}, sourceArgs[i]), "\t"))
 	}
 	waitMarker(initial)
 	saved, err := s.client.Save(t.Context(), dir, false)
@@ -490,7 +491,7 @@ end
 	// hooks have released the lock before the test's nonblocking state reads.
 	ready, cancel := context.WithTimeout(t.Context(), DefaultAutoWait)
 	defer cancel()
-	for len(readMarker()) < len(live) {
+	for len(readMarker()) < liveAgents {
 		select {
 		case <-ready.Done():
 			t.Fatalf("replayed hooks did not register: %q: %v", readMarker(), ready.Err())
@@ -508,16 +509,8 @@ end
 		t.Fatalf("journal lost skip: %+v", j)
 	}
 	var want []string
-	for _, i := range live {
-		h, r := harnesses[i], agentReceipt(i+1, "")
-		args := []string{h, "--resume", r.Conversation, "--model", r.Model, "--effort", r.Effort}
-		switch h {
-		case "codex-work":
-			args = []string{h, "resume", r.Conversation, "-m", r.Model, "-c", "model_reasoning_effort=" + r.Effort}
-		case "omp-work":
-			args = []string{h, "--resume", r.Conversation}
-		}
-		want = append(want, strings.Join(append([]string{string(result.IDMap[snapshot.SourceID(created.ID)]), string(result.IDMap[snapshot.SourceID(blocks[i])]), cwd}, args...), "\t"))
+	for i := range liveAgents {
+		want = append(want, strings.Join(slices.Concat([]string{string(result.IDMap[snapshot.SourceID(created.ID)]), string(result.IDMap[snapshot.SourceID(blocks[i])]), cwd}, sourceArgs[i]), "\t"))
 	}
 	waitMarker(want)
 	compareRestored(t, s.client, saved, result.IDMap)
@@ -545,7 +538,7 @@ end
 		t.Fatalf("second restore changed state: %+v %v", again, err)
 	}
 	var finished []string
-	for _, i := range live {
+	for i := range liveAgents {
 		block := result.IDMap[snapshot.SourceID(blocks[i])]
 		mustCall(t, s.client, "com.superlogical.terminal.write", map[string]any{"session_id": result.IDMap[snapshot.SourceID(created.ID)], "block_id": block, "args": map[string]any{"data": "\n"}}, nil)
 		finished = append(finished, string(block))
@@ -564,7 +557,7 @@ end
 	if again, err := s.client.RestoreSaved(t.Context(), dir, saved.Generation); err != nil || !reflect.DeepEqual(again, result) || !reflect.DeepEqual(beforeFiles, savedFiles(t, dir)) || !reflect.DeepEqual(before, readMarker()) {
 		t.Fatalf("completed restore re-registered an exited agent: %+v %v", again, err)
 	}
-	t.Logf("resumed and cleared three custom-command conversations; legacy claude-team and future-agent received no input; compared %d ID mappings", len(result.IDMap))
+	t.Logf("resumed and cleared %d custom-command conversations; legacy claude-team and future-agent received no input; compared %d ID mappings", liveAgents, len(result.IDMap))
 }
 
 func TestReceiptRejectsBeforeRex(t *testing.T) {

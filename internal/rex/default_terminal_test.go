@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -52,6 +53,15 @@ func requireLoginShell(t *testing.T) {
 	if os.Getenv("REXURRECT_SKIP_LOGIN_SHELL") == "1" {
 		t.Skip("REXURRECT_SKIP_LOGIN_SHELL=1: the real login-shell test must run outside an agent sandbox")
 	}
+}
+
+func requireFish(t *testing.T) string {
+	t.Helper()
+	fish, err := exec.LookPath("fish")
+	if err != nil {
+		t.Fatalf("fish is required: the agent functions are fish-only: %v", err)
+	}
+	return fish
 }
 
 func TestDefaultTerminalRoundTrip(t *testing.T) {
