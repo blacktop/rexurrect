@@ -1,6 +1,7 @@
 package rex
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"github.com/blacktop/rexurrect/internal/keychain"
 	"github.com/blacktop/rexurrect/internal/scrollback"
@@ -62,14 +62,12 @@ type terminalModes struct {
 }
 
 // scrollbackSealer holds what every block of one capture shares: the store,
-// the key or the reason it is unavailable, the binding's state and host, and
-// the remaining generation budget.
+// the key, the binding's state and host, and the remaining generation budget.
 type scrollbackSealer struct {
 	store   *state.Store
 	stateID [16]byte
 	keyID   scrollback.KeyID
 	master  []byte
-	keyErr  error
 	hostID  string
 	budget  int
 }
@@ -84,9 +82,18 @@ func (c Client) captureScrollback(ctx context.Context, store *state.Store, e *st
 		return nil
 	}
 	sealer := &scrollbackSealer{store: store, hostID: e.HostID, budget: maxScrollbackPerGeneration}
-	sealer.stateID, sealer.keyID, sealer.master, sealer.keyErr = store.ScrollbackKey(ctx, c.keychainStore())
-	if sealer.keyErr != nil && ctx.Err() != nil {
-		return ctx.Err()
+	var keyErr error
+	sealer.stateID, sealer.keyID, sealer.master, keyErr = store.ScrollbackKey(ctx, c.keychainStore())
+	if keyErr != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		for _, session := range e.Snapshot.Sessions {
+			for _, b := range session.Blocks() {
+				e.Report.ScrollbackSkipped = append(e.Report.ScrollbackSkipped, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: skipReason(keyErr)})
+			}
+		}
+		return nil
 	}
 	for si := range e.Snapshot.Sessions {
 		session := &e.Snapshot.Sessions[si]
@@ -117,9 +124,6 @@ func hasBlocks(s snapshot.Snapshot) bool {
 // captureBlock reads, seals, and publishes one block's scrollback. A nonempty
 // reason is a per-block skip; the only error is the context's.
 func (c Client) captureBlock(ctx context.Context, sealer *scrollbackSealer, session, block snapshot.SourceID) (*snapshot.ScrollbackRef, string, error) {
-	if sealer.keyErr != nil {
-		return nil, skipReason(sealer.keyErr), nil
-	}
 	plaintext, reason, err := c.readScrollback(ctx, snapshot.LiveID(session), snapshot.LiveID(block))
 	if err != nil {
 		if ctx.Err() != nil {
@@ -194,7 +198,7 @@ func (c Client) readScrollback(ctx context.Context, session, block snapshot.Live
 		return nil, "alternate screen", nil
 	}
 	clean, _ := scrollback.Sanitize([]byte(out.Content))
-	if len(strings.TrimSpace(string(clean))) == 0 {
+	if len(bytes.TrimSpace(clean)) == 0 {
 		return nil, "empty", nil
 	}
 	if len(clean) > scrollback.MaxPlaintext {
@@ -236,26 +240,22 @@ type replayCommand []string
 // authenticate now. Blocks that cannot are reported and restored as plain
 // shells. A successful decision pins the sidecars for the restore; if the pin
 // cannot be written, every replay becomes a skip and the restore continues.
-func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, dir string, e state.Envelope) (map[snapshot.SourceID]replayCommand, []snapshot.ScrollbackSkip, error) {
-	var refs int
+func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, e state.Envelope) (map[snapshot.SourceID]replayCommand, []snapshot.ScrollbackSkip, error) {
+	var referenced []*snapshot.Block
 	for _, session := range e.Snapshot.Sessions {
 		for _, b := range session.Blocks() {
 			if b.Scrollback != nil {
-				refs++
+				referenced = append(referenced, b)
 			}
 		}
 	}
-	if refs == 0 {
+	if len(referenced) == 0 {
 		return nil, nil, nil
 	}
 	var skips []snapshot.ScrollbackSkip
 	skipAll := func(reason string) (map[snapshot.SourceID]replayCommand, []snapshot.ScrollbackSkip, error) {
-		for _, session := range e.Snapshot.Sessions {
-			for _, b := range session.Blocks() {
-				if b.Scrollback != nil {
-					skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: reason})
-				}
-			}
+		for _, b := range referenced {
+			skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: reason})
 		}
 		return nil, skips, nil
 	}
@@ -269,45 +269,25 @@ func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, dir st
 		}
 		return skipAll(skipReason(err))
 	}
-	executable, err := rexurrectExecutable()
-	if err == nil {
-		executable, err = filepath.EvalSymlinks(executable)
-	}
-	if err != nil {
-		return skipAll("rexurrect executable path: " + bounded(err.Error(), 200))
-	}
-	// The replay command runs in the restored block's cwd, so a relative
-	// state directory must be made absolute before it is embedded.
-	dir, err = filepath.Abs(dir)
-	if err != nil {
-		return skipAll("state directory path: " + bounded(err.Error(), 200))
-	}
-	me, err := user.Current()
-	if err != nil || me.Username == "" {
-		return skipAll("current user unknown")
+	executable, username, reason := replayEnvironment()
+	if reason != "" {
+		return skipAll(reason)
 	}
 	commands := make(map[snapshot.SourceID]replayCommand)
-	for _, session := range e.Snapshot.Sessions {
-		for _, b := range session.Blocks() {
-			ref := b.Scrollback
-			if ref == nil {
-				continue
-			}
-			keyID, keyErr := scrollback.ParseKeyID(ref.KeyID)
-			objectID, objectErr := scrollback.ParseObjectID(ref.ObjectID)
-			blob, readErr := store.ReadScrollback(*ref)
-			if err := errors.Join(keyErr, objectErr, readErr); err != nil {
-				skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: "scrollback sidecar unreadable"})
-				continue
-			}
-			binding := scrollback.Binding{StateID: stateID, HostID: e.HostID, BlockID: string(b.ID)}
-			if _, err := scrollback.Open(master, keyID, objectID, binding, blob); err != nil {
-				skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: "scrollback sidecar does not authenticate"})
-				continue
-			}
-			commands[b.ID] = replayCommand{"/bin/bash", "--noprofile", "--norc", "-c", replayScript, "rexurrect",
-				executable, dir, ref.KeyID, ref.ObjectID, e.HostID, string(b.ID), me.Username}
+	for _, b := range referenced {
+		keyID, objectID, parseErr := b.Scrollback.Parse()
+		blob, readErr := store.ReadScrollback(*b.Scrollback)
+		if err := errors.Join(parseErr, readErr); err != nil {
+			skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: "scrollback sidecar unreadable"})
+			continue
 		}
+		binding := scrollback.Binding{StateID: stateID, HostID: e.HostID, BlockID: string(b.ID)}
+		if _, err := scrollback.Open(master, keyID, objectID, binding, blob); err != nil {
+			skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: "scrollback sidecar does not authenticate"})
+			continue
+		}
+		commands[b.ID] = replayCommand{"/bin/bash", "--noprofile", "--norc", "-c", replayScript, "rexurrect",
+			executable, store.Dir(), b.Scrollback.KeyID, b.Scrollback.ObjectID, e.HostID, string(b.ID), username}
 	}
 	if len(commands) == 0 {
 		return nil, skips, nil
@@ -316,14 +296,30 @@ func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, dir st
 	// so a pin failure restores plain shells instead of failing the recovery.
 	if err := store.PinScrollback(e); err != nil {
 		reason := "scrollback pin: " + bounded(err.Error(), 200)
-		for _, session := range e.Snapshot.Sessions {
-			for _, b := range session.Blocks() {
-				if _, ok := commands[b.ID]; ok {
-					skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: reason})
-				}
+		for _, b := range referenced {
+			if _, ok := commands[b.ID]; ok {
+				skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: reason})
 			}
 		}
 		return nil, skips, nil
 	}
 	return commands, skips, nil
+}
+
+// replayEnvironment resolves what every replay command embeds about this
+// host: the rexurrect executable and the user whose login chain it starts. A
+// nonempty reason means no block can replay.
+func replayEnvironment() (executable, username, reason string) {
+	executable, err := rexurrectExecutable()
+	if err == nil {
+		executable, err = filepath.EvalSymlinks(executable)
+	}
+	if err != nil {
+		return "", "", "rexurrect executable path: " + bounded(err.Error(), 200)
+	}
+	me, err := user.Current()
+	if err != nil || me.Username == "" {
+		return "", "", "current user unknown"
+	}
+	return executable, me.Username, ""
 }

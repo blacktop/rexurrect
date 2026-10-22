@@ -63,11 +63,18 @@ type ScrollbackRef struct {
 	ObjectID string `json:"object_id"`
 }
 
-func (r ScrollbackRef) Validate() error {
-	if _, err := scrollback.ParseKeyID(r.KeyID); err != nil {
-		return err
+// Parse decodes both identifiers; Validate is the check alone.
+func (r ScrollbackRef) Parse() (scrollback.KeyID, scrollback.ObjectID, error) {
+	keyID, err := scrollback.ParseKeyID(r.KeyID)
+	if err != nil {
+		return keyID, scrollback.ObjectID{}, err
 	}
-	_, err := scrollback.ParseObjectID(r.ObjectID)
+	objectID, err := scrollback.ParseObjectID(r.ObjectID)
+	return keyID, objectID, err
+}
+
+func (r ScrollbackRef) Validate() error {
+	_, _, err := r.Parse()
 	return err
 }
 

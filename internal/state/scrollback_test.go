@@ -196,7 +196,11 @@ func TestScrollbackPruneKeepsRetainedAndPinned(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(s.dir, scrollbackDir, scrollbackPinsDir, "1"), old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PruneScrollback(); err != nil {
+	current, err := s.LoadCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PruneScrollback(current); err != nil {
 		t.Fatal(err)
 	}
 	// The pinned generation's file was pruned by later publications; the pin
@@ -288,7 +292,7 @@ func TestScrollbackRefusesSymlinkedDirectories(t *testing.T) {
 					t.Error("ScrollbackKey wrote its state through the symlink")
 				}
 			}
-			if err := s.PruneScrollback(); (err != nil) != tc.pruneFails {
+			if err := s.PruneScrollback(Current{}); (err != nil) != tc.pruneFails {
 				t.Errorf("PruneScrollback: %v", err)
 			}
 			entries, err := os.ReadDir(outside)
@@ -312,7 +316,7 @@ func TestScrollbackRefusesSymlinkedDirectories(t *testing.T) {
 	if err := s.WriteScrollback(ref, blob); err == nil {
 		t.Error("WriteScrollback accepted a shared key directory")
 	}
-	if err := s.PruneScrollback(); err == nil {
+	if err := s.PruneScrollback(Current{}); err == nil {
 		t.Error("PruneScrollback accepted a shared key directory")
 	}
 }

@@ -160,6 +160,12 @@ func Open(dir string) (*Store, error) {
 	if dir == "" {
 		return nil, errors.New("state directory is required")
 	}
+	// Paths derived from the store are embedded in commands that run in
+	// other working directories, so the store is absolute by construction.
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve state directory: %w", err)
+	}
 	if err := makeDirectory(dir); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
@@ -364,19 +370,11 @@ func (s *Store) LoadCurrent() (Current, error) {
 	return current, nil
 }
 
-// PublishGuards reports the predictable reasons Publish would refuse e: an
-// exhausted generation counter, a different Rex host, or an empty snapshot
-// over a nonempty history without allowEmpty. Callers with optional side
-// effects run it before them.
-func (s *Store) PublishGuards(e Envelope, allowEmpty bool) error {
-	current, err := s.LoadCurrent()
-	if err != nil && !errors.Is(err, ErrNoCurrent) {
-		return err
-	}
-	return publishGuards(current, e, allowEmpty)
-}
-
-func publishGuards(current Current, e Envelope, allowEmpty bool) error {
+// PublishGuards reports the predictable reasons Publish would refuse e over
+// current: an exhausted generation counter, a different Rex host, or an empty
+// snapshot over a nonempty history without allowEmpty. Callers with optional
+// side effects run it before them, on the Current they already hold.
+func PublishGuards(current Current, e Envelope, allowEmpty bool) error {
 	previous := current.Envelope.Generation
 	if previous == math.MaxUint64 {
 		return errors.New("generation number exhausted")
@@ -398,7 +396,7 @@ func (s *Store) Publish(e Envelope, allowEmpty bool) (Envelope, error) {
 	if err != nil && !errors.Is(err, ErrNoCurrent) {
 		return Envelope{}, err
 	}
-	if err := publishGuards(current, e, allowEmpty); err != nil {
+	if err := PublishGuards(current, e, allowEmpty); err != nil {
 		return Envelope{}, err
 	}
 	previous := current.Envelope.Generation
@@ -478,11 +476,13 @@ func (s *Store) write(name string, value any) error {
 	if len(data) >= MaxFileSize {
 		return fmt.Errorf("%s exceeds %d-byte size limit", name, MaxFileSize)
 	}
-	data = append(data, '\n')
-	// The temporary file lives beside its destination and that directory is
-	// synced, so a nested record such as scrollback/state.json is durable
-	// before the caller's next side effect.
-	target := filepath.Join(s.dir, name)
+	return publishFile(filepath.Join(s.dir, name), name, append(data, '\n'))
+}
+
+// publishFile publishes data at target through a private temporary file beside
+// it, fsyncs the file and then the directory, so a nested record is durable
+// where it lives before the caller's next side effect.
+func publishFile(target, name string, data []byte) error {
 	dir := filepath.Dir(target)
 	f, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {

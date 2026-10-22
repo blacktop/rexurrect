@@ -372,7 +372,7 @@ func TestScrollbackReplaySkipsWhenPinFails(t *testing.T) {
 	fake := keychaintest.New(t, ScrollbackKeychainService)
 	store := openState(t)
 	c, e, block := sealedReplayFixture(t, store, fake)
-	commands, skips, err := c.scrollbackReplay(t.Context(), store, store.Dir(), e)
+	commands, skips, err := c.scrollbackReplay(t.Context(), store, e)
 	if err != nil || len(commands) != 1 || len(skips) != 0 {
 		t.Fatalf("replay decision: %d commands %+v %v", len(commands), skips, err)
 	}
@@ -383,7 +383,7 @@ func TestScrollbackReplaySkipsWhenPinFails(t *testing.T) {
 	if err := os.WriteFile(pins, []byte("damaged"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	commands, skips, err = c.scrollbackReplay(t.Context(), store, store.Dir(), e)
+	commands, skips, err = c.scrollbackReplay(t.Context(), store, e)
 	if err != nil || commands != nil {
 		t.Fatalf("pin failure did not degrade: %v %v", commands, err)
 	}
@@ -407,7 +407,7 @@ func TestScrollbackReplayResolvesRelativeStateDir(t *testing.T) {
 		}
 	})
 	c, e, block := sealedReplayFixture(t, store, fake)
-	commands, skips, err := c.scrollbackReplay(t.Context(), store, "saved", e)
+	commands, skips, err := c.scrollbackReplay(t.Context(), store, e)
 	if err != nil || len(skips) != 0 || len(commands) != 1 {
 		t.Fatalf("replay decision: %d commands %+v %v", len(commands), skips, err)
 	}
@@ -429,7 +429,7 @@ func TestScrollbackReplayPropagatesCancellation(t *testing.T) {
 	c, e, _ := sealedReplayFixture(t, store, fake)
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
-	commands, skips, err := c.scrollbackReplay(cancelled, store, store.Dir(), e)
+	commands, skips, err := c.scrollbackReplay(cancelled, store, e)
 	if !errors.Is(err, context.Canceled) || commands != nil || skips != nil {
 		t.Fatalf("cancelled replay decision: %v commands %+v skips %v", commands, skips, err)
 	}

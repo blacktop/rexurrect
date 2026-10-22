@@ -149,8 +149,8 @@ func TestValidation(t *testing.T) {
 			t.Errorf("accepted service %q", service)
 		}
 	}
-	if !ValidKeyID(testKeyID) || ValidKeyID("x") {
-		t.Fatal("ValidKeyID")
+	if !validKeyID(testKeyID) || validKeyID("x") {
+		t.Fatal("validKeyID")
 	}
 	defaults := Store{Service: testService}
 	if defaults.security() != defaultSecurity || defaults.timeout() != DefaultTimeout {

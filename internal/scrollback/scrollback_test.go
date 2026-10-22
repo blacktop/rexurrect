@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -298,7 +299,7 @@ func forge(t *testing.T, key []byte, keyID KeyID, b Binding, id ObjectID, compre
 	if err != nil {
 		t.Fatal(err)
 	}
-	additional := append(append([]byte{}, out...), context...)
+	additional := slices.Concat(out, context)
 	return box.Seal(out, nil, compressed, additional)
 }
 

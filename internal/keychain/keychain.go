@@ -49,14 +49,14 @@ type Store struct {
 	Timeout  time.Duration // Zero uses DefaultTimeout.
 }
 
-// ValidKeyID reports whether id is the 32-hex-digit form every key ID uses.
-func ValidKeyID(id string) bool { return keyIDPattern.MatchString(id) }
+// validKeyID reports whether id is the 32-hex-digit form every key ID uses.
+func validKeyID(id string) bool { return keyIDPattern.MatchString(id) }
 
 func (s Store) validate(keyID string) error {
 	if !servicePattern.MatchString(s.Service) {
 		return errors.New("keychain service must be a bounded token")
 	}
-	if !ValidKeyID(keyID) {
+	if !validKeyID(keyID) {
 		return errors.New("keychain key ID must be 32 hex digits")
 	}
 	return nil

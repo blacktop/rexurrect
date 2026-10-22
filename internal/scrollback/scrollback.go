@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"slices"
 	"unicode/utf8"
 )
 
@@ -250,7 +251,7 @@ func Seal(master []byte, keyID KeyID, b Binding, plaintext []byte) (ObjectID, []
 	if err != nil {
 		return zero, nil, err
 	}
-	additional := append(append([]byte{}, out...), context...)
+	additional := slices.Concat(out, context)
 	return id, box.Seal(out, nil, compressed.Bytes(), additional), nil
 }
 
@@ -276,7 +277,7 @@ func Open(master []byte, keyID KeyID, want ObjectID, b Binding, blob []byte) ([]
 	if err != nil {
 		return nil, err
 	}
-	additional := append(append([]byte{}, blob[:headerSize]...), context...)
+	additional := slices.Concat(blob[:headerSize], context)
 	compressed, err := box.Open(nil, nil, blob[headerSize:], additional)
 	if err != nil {
 		return nil, errors.New("scrollback blob authentication failed")

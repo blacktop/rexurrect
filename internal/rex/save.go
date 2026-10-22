@@ -147,17 +147,28 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 	if err != nil {
 		return state.Envelope{}, err
 	}
+	// The automatic cycle passes the Current it already loaded and is the only
+	// caller that suppresses an unchanged publication; a manual save loads it
+	// here once for the guards and the retention set.
+	automatic := current != nil
+	if !automatic {
+		loaded, err := store.LoadCurrent()
+		if err != nil && !errors.Is(err, state.ErrNoCurrent) {
+			return state.Envelope{}, err
+		}
+		current = &loaded
+	}
 	if c.Scrollback {
 		// The publication guards run first so a refused save leaves no
 		// sidecar, state record, or keychain item behind.
-		if err := store.PublishGuards(captured, allowEmpty); err != nil {
+		if err := state.PublishGuards(*current, captured, allowEmpty); err != nil {
 			return state.Envelope{}, err
 		}
 		if err := c.captureScrollback(ctx, store, &captured); err != nil {
 			return state.Envelope{}, err
 		}
 	}
-	if current != nil {
+	if automatic {
 		previous := current.Envelope
 		// Preserve the empty-server guard, including an explicitly saved empty
 		// current generation whose last-known-good is still nonempty.
@@ -171,7 +182,7 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 					return state.Envelope{}, err
 				}
 			}
-			if err := store.PruneScrollback(); err != nil {
+			if err := store.PruneScrollback(*current); err != nil {
 				return state.Envelope{}, fmt.Errorf("pruning scrollback failed: %w", err)
 			}
 			return captured, nil // Generation zero means no publication.
@@ -182,7 +193,11 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 		err = store.WriteReceipts(captured.HostID, kept)
 	}
 	if err == nil {
-		if pruneErr := store.PruneScrollback(); pruneErr != nil {
+		retained := state.Current{Envelope: saved}
+		if previous := current.Envelope; previous.Generation != 0 {
+			retained.LastKnownGood = &previous
+		}
+		if pruneErr := store.PruneScrollback(retained); pruneErr != nil {
 			err = fmt.Errorf("generation %d was published, but pruning scrollback failed: %w", saved.Generation, pruneErr)
 		}
 	}

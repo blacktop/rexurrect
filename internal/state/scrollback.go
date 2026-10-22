@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -43,6 +42,15 @@ type scrollbackState struct {
 	Status        string `json:"status"` // pending until the keychain item is known to exist
 }
 
+// stateID decodes the binding state ID; it shares the key ID grammar.
+func (r scrollbackState) stateID() ([16]byte, error) {
+	id, err := scrollback.ParseKeyID(r.StateID)
+	if err != nil {
+		return [16]byte{}, errors.New("invalid scrollback state ID")
+	}
+	return [16]byte(id), nil
+}
+
 // ScrollbackKey returns this store's binding state ID, key ID, and master key,
 // provisioning them on first use. Provisioning is transactional: a pending
 // record is written before the keychain item, and a pending record whose item
@@ -57,42 +65,35 @@ func (s *Store) ScrollbackKey(ctx context.Context, kc keychain.Store) ([16]byte,
 	if err != nil {
 		return stateID, keyID, nil, err
 	}
-	raw, err := hex.DecodeString(record.StateID)
-	if err != nil || len(raw) != len(stateID) {
-		return stateID, keyID, nil, errors.New("invalid scrollback state ID")
+	if stateID, err = record.stateID(); err != nil {
+		return stateID, keyID, nil, err
 	}
-	copy(stateID[:], raw)
 	if keyID, err = scrollback.ParseKeyID(record.KeyID); err != nil {
 		return stateID, keyID, nil, err
 	}
 	master, err := kc.Load(ctx, record.KeyID)
 	switch {
-	case err == nil:
-		if record.Status != "ready" {
-			record.Status = "ready"
-			if err := s.writeScrollbackState(record); err != nil {
-				return stateID, keyID, nil, err
-			}
-		}
-		return stateID, keyID, master, nil
 	case errors.Is(err, keychain.ErrNotFound) && record.Status == "ready":
 		return stateID, keyID, nil, fmt.Errorf("%w: key %s", ErrScrollbackKeyMissing, record.KeyID)
 	case errors.Is(err, keychain.ErrNotFound):
-		master = make([]byte, keychain.KeySize)
+		master = make([]byte, scrollback.KeySize)
 		if _, err := rand.Read(master); err != nil {
 			return stateID, keyID, nil, err
 		}
 		if err := kc.Create(ctx, record.KeyID, master); err != nil {
 			return stateID, keyID, nil, fmt.Errorf("provision scrollback key: %w", err)
 		}
+	case err != nil:
+		return stateID, keyID, nil, err
+	}
+	// The item is known to exist now, whether it was just created or found.
+	if record.Status != "ready" {
 		record.Status = "ready"
 		if err := s.writeScrollbackState(record); err != nil {
 			return stateID, keyID, nil, err
 		}
-		return stateID, keyID, master, nil
-	default:
-		return stateID, keyID, nil, err
 	}
+	return stateID, keyID, master, nil
 }
 
 func (s *Store) provisionScrollbackState() (scrollbackState, error) {
@@ -105,12 +106,20 @@ func (s *Store) provisionScrollbackState() (scrollbackState, error) {
 }
 
 func (s *Store) readScrollbackState() (scrollbackState, error) {
+	return readScrollbackState(s.dir)
+}
+
+// readScrollbackState reads and validates the record under dir; the lock-free
+// replay path uses it too, so both readers enforce the same checks.
+func readScrollbackState(dir string) (scrollbackState, error) {
 	var record scrollbackState
-	if err := s.read(filepath.Join(scrollbackDir, scrollbackStateName), 1024, &record); err != nil {
+	name := filepath.Join(scrollbackDir, scrollbackStateName)
+	if err := readJSON(filepath.Join(dir, name), name, 1024, &record); err != nil {
 		return record, err
 	}
-	stateID, decodeErr := hex.DecodeString(record.StateID)
-	if record.FormatVersion != 1 || decodeErr != nil || len(stateID) != 16 || !keychain.ValidKeyID(record.KeyID) || record.Status != "pending" && record.Status != "ready" {
+	_, stateErr := record.stateID()
+	_, keyErr := scrollback.ParseKeyID(record.KeyID)
+	if record.FormatVersion != 1 || stateErr != nil || keyErr != nil || record.Status != "pending" && record.Status != "ready" {
 		return record, errors.New("invalid scrollback state record")
 	}
 	return record, nil
@@ -155,46 +164,15 @@ func (s *Store) WriteScrollback(ref snapshot.ScrollbackRef, blob []byte) error {
 	if s.HasScrollback(ref) {
 		return nil
 	}
-	dir, err := s.subdirectory(scrollbackDir, ref.KeyID)
-	if err != nil {
+	if _, err := s.subdirectory(scrollbackDir, ref.KeyID); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	temp := f.Name()
-	defer func() { _ = os.Remove(temp) }()
-	if _, err = f.Write(blob); err == nil {
-		err = f.Sync()
-	}
-	if err = errors.Join(err, f.Close()); err != nil {
-		return fmt.Errorf("write %s: %w", name, err)
-	}
-	if err := os.Rename(temp, filepath.Join(s.dir, name)); err != nil {
-		return fmt.Errorf("publish %s: %w", name, err)
-	}
-	return syncDirectory(dir)
+	return publishFile(filepath.Join(s.dir, name), name, blob)
 }
 
 // ReadScrollback returns the bounded raw sidecar for ref.
 func (s *Store) ReadScrollback(ref snapshot.ScrollbackRef) ([]byte, error) {
-	name, err := scrollbackPath(ref)
-	if err != nil {
-		return nil, err
-	}
-	f, err := openFile(filepath.Join(s.dir, name), os.O_RDONLY)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", name, err)
-	}
-	data, readErr := io.ReadAll(io.LimitReader(f, MaxScrollbackBlob+1))
-	if err := errors.Join(readErr, f.Close()); err != nil {
-		return nil, fmt.Errorf("read %s: %w", name, err)
-	}
-	if len(data) > MaxScrollbackBlob {
-		return nil, fmt.Errorf("%s exceeds %d-byte size limit", name, MaxScrollbackBlob)
-	}
-	return data, nil
+	return ReadScrollbackSidecar(s.dir, ref)
 }
 
 func scrollbackRefs(e Envelope) []string {
@@ -226,11 +204,12 @@ func (s *Store) PinScrollback(e Envelope) error {
 	return s.write(name, refs)
 }
 
-// PruneScrollback removes sidecars that neither the current generation, the
-// last known good one, nor an unexpired pin references. Temporary files are
-// removed too; the state lock means no writer can be mid-publish. Every
-// directory it deletes from must be a private real directory, never a symlink.
-func (s *Store) PruneScrollback() error {
+// PruneScrollback removes sidecars that neither the retained generations
+// (the current one and its last known good) nor an unexpired pin reference.
+// Temporary files are removed too; the state lock means no writer can be
+// mid-publish. Every directory it deletes from must be a private real
+// directory, never a symlink.
+func (s *Store) PruneScrollback(retained Current) error {
 	root := filepath.Join(s.dir, scrollbackDir)
 	if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -238,10 +217,7 @@ func (s *Store) PruneScrollback() error {
 	if err := privateDirectory(root, scrollbackDir); err != nil {
 		return err
 	}
-	referenced, err := s.retainedScrollback()
-	if err != nil {
-		return err
-	}
+	referenced := retainedScrollback(retained)
 	if err := s.pinnedScrollback(referenced); err != nil {
 		return err
 	}
@@ -256,7 +232,7 @@ func (s *Store) PruneScrollback() error {
 			}
 			continue
 		}
-		if !key.IsDir() || !keychain.ValidKeyID(key.Name()) {
+		if _, err := scrollback.ParseKeyID(key.Name()); !key.IsDir() || err != nil {
 			continue
 		}
 		if err := s.pruneScrollbackKey(key.Name(), referenced); err != nil {
@@ -266,26 +242,18 @@ func (s *Store) PruneScrollback() error {
 	return nil
 }
 
-// retainedScrollback lists the sidecars the current and last-known-good
-// generations reference.
-func (s *Store) retainedScrollback() (map[string]bool, error) {
+// retainedScrollback lists the sidecars the retained generations reference.
+func retainedScrollback(retained Current) map[string]bool {
 	referenced := make(map[string]bool)
-	current, err := s.LoadCurrent()
-	if errors.Is(err, ErrNoCurrent) {
-		return referenced, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	for _, ref := range scrollbackRefs(current.Envelope) {
+	for _, ref := range scrollbackRefs(retained.Envelope) {
 		referenced[ref] = true
 	}
-	if current.LastKnownGood != nil {
-		for _, ref := range scrollbackRefs(*current.LastKnownGood) {
+	if retained.LastKnownGood != nil {
+		for _, ref := range scrollbackRefs(*retained.LastKnownGood) {
 			referenced[ref] = true
 		}
 	}
-	return referenced, nil
+	return referenced
 }
 
 // pinnedScrollback adds the sidecars that unexpired pins protect and removes
@@ -363,16 +331,9 @@ func ReadScrollbackSidecar(dir string, ref snapshot.ScrollbackRef) ([]byte, erro
 // ReadScrollbackStateID reads the binding state ID without the state lock,
 // for the same replay path.
 func ReadScrollbackStateID(dir string) ([16]byte, error) {
-	var stateID [16]byte
-	var record scrollbackState
-	name := filepath.Join(scrollbackDir, scrollbackStateName)
-	if err := readJSON(filepath.Join(dir, name), name, 1024, &record); err != nil {
-		return stateID, err
+	record, err := readScrollbackState(dir)
+	if err != nil {
+		return [16]byte{}, err
 	}
-	raw, err := hex.DecodeString(record.StateID)
-	if err != nil || len(raw) != len(stateID) {
-		return stateID, errors.New("invalid scrollback state ID")
-	}
-	copy(stateID[:], raw)
-	return stateID, nil
+	return record.stateID()
 }

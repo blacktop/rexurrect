@@ -104,7 +104,7 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	// reported again.
 	var replay map[snapshot.SourceID]replayCommand
 	if creating := creatingSessions(e, latest); len(creating.Snapshot.Sessions) != 0 {
-		replay, scrollbackSkipped, err = c.scrollbackReplay(ctx, store, store.Dir(), creating)
+		replay, scrollbackSkipped, err = c.scrollbackReplay(ctx, store, creating)
 		if err != nil {
 			return out, err
 		}

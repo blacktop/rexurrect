@@ -47,11 +47,10 @@ func runScrollback(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return errors.New("--state-dir, --host, and a full --block ID are required")
 	}
 	ref := snapshot.ScrollbackRef{KeyID: *keyID, ObjectID: *objectID}
-	if err := ref.Validate(); err != nil {
+	parsedKey, parsedObject, err := ref.Parse()
+	if err != nil {
 		return err
 	}
-	parsedKey, _ := scrollback.ParseKeyID(*keyID)
-	parsedObject, _ := scrollback.ParseObjectID(*objectID)
 	stateID, err := state.ReadScrollbackStateID(*dir)
 	if err != nil {
 		return err
