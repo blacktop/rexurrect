@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -334,12 +335,10 @@ func TestCaptureScrollbackDegradesReadFailures(t *testing.T) {
 	}
 }
 
-// A pin that cannot be written turns every replay into a skip instead of
-// failing the restore.
-func TestScrollbackReplaySkipsWhenPinFails(t *testing.T) {
-	fake := keychaintest.New(t, ScrollbackKeychainService)
-	store := openState(t)
-	c := Client{Keychain: fake.Store}
+// sealedReplayFixture provisions the key, seals one block's scrollback into
+// store, and points the replay at a stub executable.
+func sealedReplayFixture(t *testing.T, store *state.Store, fake keychaintest.Fake) (Client, state.Envelope, snapshot.SourceID) {
+	t.Helper()
 	block := snapshot.SourceID("block:01234567-89ab-4cde-8fab-0123456789ab")
 	e := scrollbackEnvelope(block)
 	stateID, keyID, master, err := store.ScrollbackKey(t.Context(), fake.Store)
@@ -364,6 +363,15 @@ func TestScrollbackReplaySkipsWhenPinFails(t *testing.T) {
 	previous := rexurrectExecutable
 	rexurrectExecutable = func() (string, error) { return "/usr/bin/true", nil }
 	t.Cleanup(func() { rexurrectExecutable = previous })
+	return Client{Keychain: fake.Store}, e, block
+}
+
+// A pin that cannot be written turns every replay into a skip instead of
+// failing the restore.
+func TestScrollbackReplaySkipsWhenPinFails(t *testing.T) {
+	fake := keychaintest.New(t, ScrollbackKeychainService)
+	store := openState(t)
+	c, e, block := sealedReplayFixture(t, store, fake)
 	commands, skips, err := c.scrollbackReplay(t.Context(), store, store.Dir(), e)
 	if err != nil || len(commands) != 1 || len(skips) != 0 {
 		t.Fatalf("replay decision: %d commands %+v %v", len(commands), skips, err)
@@ -381,5 +389,174 @@ func TestScrollbackReplaySkipsWhenPinFails(t *testing.T) {
 	}
 	if len(skips) != 1 || skips[0].BlockID != block || !strings.HasPrefix(skips[0].Reason, "scrollback pin: ") {
 		t.Fatalf("skips: %+v", skips)
+	}
+}
+
+// The replay command runs in the restored block's cwd, so a relative state
+// directory is embedded as an absolute path.
+func TestScrollbackReplayResolvesRelativeStateDir(t *testing.T) {
+	fake := keychaintest.New(t, ScrollbackKeychainService)
+	t.Chdir(t.TempDir())
+	store, err := state.Open("saved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	c, e, block := sealedReplayFixture(t, store, fake)
+	commands, skips, err := c.scrollbackReplay(t.Context(), store, "saved", e)
+	if err != nil || len(skips) != 0 || len(commands) != 1 {
+		t.Fatalf("replay decision: %d commands %+v %v", len(commands), skips, err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := commands[block]
+	if want := filepath.Join(wd, "saved"); slices.Contains(command, "saved") || !slices.Contains(command, want) {
+		t.Fatalf("replay command embeds a relative state directory: %q", command)
+	}
+}
+
+// A key load that fails because the restore was cancelled fails the replay
+// decision instead of degrading to plain shells.
+func TestScrollbackReplayPropagatesCancellation(t *testing.T) {
+	fake := keychaintest.New(t, ScrollbackKeychainService)
+	store := openState(t)
+	c, e, _ := sealedReplayFixture(t, store, fake)
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	commands, skips, err := c.scrollbackReplay(cancelled, store, store.Dir(), e)
+	if !errors.Is(err, context.Canceled) || commands != nil || skips != nil {
+		t.Fatalf("cancelled replay decision: %v commands %+v skips %v", commands, skips, err)
+	}
+}
+
+// Replay preparation covers only the sessions a restore has not attempted;
+// the caller's envelope is left intact.
+func TestCreatingSessionsKeepsOnlyUnattempted(t *testing.T) {
+	e := scrollbackEnvelope("block:00000000-89ab-4cde-8fab-0123456789ab", "block:11111111-89ab-4cde-8fab-0123456789ab", "block:22222222-89ab-4cde-8fab-0123456789ab")
+	complete, pending, configuring := e.Snapshot.Sessions[0].ID, e.Snapshot.Sessions[1].ID, e.Snapshot.Sessions[2].ID
+	latest := map[snapshot.SourceID]state.JournalRecord{complete: {Outcome: "complete"}, configuring: {Outcome: "configuring"}}
+	creating := creatingSessions(e, latest)
+	if len(creating.Snapshot.Sessions) != 1 || creating.Snapshot.Sessions[0].ID != pending {
+		t.Fatalf("creating sessions: %+v", creating.Snapshot.Sessions)
+	}
+	if len(e.Snapshot.Sessions) != 3 {
+		t.Fatalf("caller's envelope was modified: %+v", e.Snapshot.Sessions)
+	}
+	if none := creatingSessions(e, map[snapshot.SourceID]state.JournalRecord{complete: {Outcome: "complete"}, pending: {Outcome: "created"}, configuring: {Outcome: "complete"}}); len(none.Snapshot.Sessions) != 0 {
+		t.Fatalf("attempted sessions kept: %+v", none.Snapshot.Sessions)
+	}
+}
+
+// A restore whose deadline expires while the scrollback key is loading fails
+// before any create intent is recorded, so the next restore starts clean.
+func TestRestoreCancelledDuringKeyLoadRecordsNoIntent(t *testing.T) {
+	fake := keychaintest.New(t, ScrollbackKeychainService)
+	fake.Timeout = 2 * time.Second
+	t.Setenv("RR_FAKE_HANG", "1")
+	binary := filepath.Join(t.TempDir(), "rex")
+	if err := os.WriteFile(binary, []byte(`#!/bin/sh
+case "$6:$8" in
+  whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"new","rex_version":"v"}' ;;
+  api:server.version) printf '%s\n' '{"rex_version":"v","commit":"c"}' ;;
+  *) exit 1 ;;
+esac
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := Client{Binary: binary, Socket: "/tmp/rexurrect-none.sock", Keychain: fake.Store}
+	store := openState(t)
+	block := snapshot.SourceID("block:01234567-89ab-4cde-8fab-0123456789ab")
+	e := scrollbackEnvelope(block)
+	e.CapturedAt, e.RexVersion, e.Commit, e.HostID, e.InstanceID = time.Now().UTC(), "v", "c", "host", "saved"
+	e.Snapshot.Sessions[0].Blocks()[0].Scrollback = &snapshot.ScrollbackRef{KeyID: strings.Repeat("ab", 16), ObjectID: strings.Repeat("cd", 32)}
+	published, err := store.Publish(e, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := serverIdentity{HostID: "host", InstanceID: "new", RexVersion: "v", Commit: "c"}
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	out, err := c.restoreSaved(ctx, store, published, target)
+	if !errors.Is(err, context.DeadlineExceeded) || len(out.ScrollbackSkipped) != 0 {
+		t.Fatalf("cancelled restore: %+v %v", out, err)
+	}
+	j, err := store.LoadJournal(published, target.HostID, target.InstanceID)
+	if err != nil || len(j.Records) != 0 {
+		t.Fatalf("cancelled restore recorded %d journal records (%v): %+v", len(j.Records), err, j.Records)
+	}
+}
+
+// A resumed restore prepares replay only for the sessions it creates: a
+// session completed by an earlier invocation is neither re-authenticated nor
+// reported again.
+func TestScrollbackReplayResumedRestorePrivateServer(t *testing.T) {
+	fake := keychaintest.New(t, ScrollbackKeychainService)
+	s := newIsolatedServer(t)
+	c := s.client
+	c.Scrollback, c.Keychain = true, fake.Store
+	dir := filepath.Join(s.root, "saved")
+	live := make(map[string]snapshot.SourceID)
+	for _, label := range []string{"a", "b"} {
+		var created createdSession
+		mustCall(t, c, "session.create", map[string]any{"label": label, "initial_windows": []createWindow{{Label: label, Layout: createNode{Block: &createBlock{Flavor: shellFlavor, Label: label, Options: shellOptions{Shell: "/bin/sh", Login: new(bool), CWD: s.root}}}}}}, &created)
+		block := created.Windows[0].Blocks[0]
+		mustCall(t, c, "com.superlogical.terminal.write", map[string]any{"session_id": created.ID, "block_id": block, "args": map[string]any{"data": "printf '" + scrollCanary + "-" + label + "\\n'\n"}}, nil)
+		waitBlockText(t, c, created.ID, block, scrollCanary+"-"+label)
+		live[label] = snapshot.SourceID(created.ID)
+	}
+	saved, err := c.Save(t.Context(), dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keyID string
+	blocks := make(map[snapshot.SourceID]snapshot.SourceID)
+	for _, session := range saved.Snapshot.Sessions {
+		b := session.Blocks()
+		if len(b) != 1 || b[0].Scrollback == nil {
+			t.Fatalf("session %s has no scrollback reference: %+v", session.ID, saved.Report)
+		}
+		keyID = b[0].Scrollback.KeyID
+		blocks[session.ID] = b[0].ID
+	}
+	sessionA, sessionB := live["a"], live["b"]
+	// Without the key every replay is a skip, so the restored shells are
+	// plain /bin/sh and no login shell is involved.
+	fake.Remove(t, keyID)
+	s.stop(t)
+	s.start(t)
+	first, err := c.RestoreSaved(t.Context(), dir, 0)
+	if err != nil || first.Outcome != "complete" || len(first.ScrollbackSkipped) != 2 {
+		t.Fatalf("first restore: %+v %v", first, err)
+	}
+	// Forget session b's journal records and its live session: the state a
+	// crash between the two sessions leaves, a complete and b unattempted.
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := store.LoadJournal(saved, first.HostID, first.InstanceID)
+	if err != nil {
+		t.Fatal(errors.Join(err, store.Close()))
+	}
+	j.Records = slices.DeleteFunc(j.Records, func(r state.JournalRecord) bool { return r.SourceID == sessionB })
+	if err := errors.Join(store.WriteJournal(saved, j), store.Close()); err != nil {
+		t.Fatal(err)
+	}
+	mustCall(t, c, "session.destroy", map[string]any{"session_id": first.IDMap[sessionB]}, nil)
+	second, err := c.RestoreSaved(t.Context(), dir, 0)
+	if err != nil || second.Outcome != "complete" {
+		t.Fatalf("resumed restore: %+v %v", second, err)
+	}
+	if len(second.ScrollbackSkipped) != 1 || second.ScrollbackSkipped[0].BlockID != blocks[sessionB] {
+		t.Fatalf("resumed restore reported sessions it did not create: %+v", second.ScrollbackSkipped)
+	}
+	if second.IDMap[sessionA] != first.IDMap[sessionA] || second.IDMap[sessionB] == "" || second.IDMap[sessionB] == first.IDMap[sessionB] {
+		t.Fatalf("resumed restore identities: first %v, second %v", first.IDMap, second.IDMap)
 	}
 }

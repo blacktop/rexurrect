@@ -479,7 +479,12 @@ func (s *Store) write(name string, value any) error {
 		return fmt.Errorf("%s exceeds %d-byte size limit", name, MaxFileSize)
 	}
 	data = append(data, '\n')
-	f, err := os.CreateTemp(s.dir, ".tmp-*")
+	// The temporary file lives beside its destination and that directory is
+	// synced, so a nested record such as scrollback/state.json is durable
+	// before the caller's next side effect.
+	target := filepath.Join(s.dir, name)
+	dir := filepath.Dir(target)
+	f, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return err
 	}
@@ -491,8 +496,8 @@ func (s *Store) write(name string, value any) error {
 	if err = errors.Join(err, f.Close()); err != nil {
 		return fmt.Errorf("write %s: %w", name, err)
 	}
-	if err := os.Rename(temp, filepath.Join(s.dir, name)); err != nil {
+	if err := os.Rename(temp, target); err != nil {
 		return fmt.Errorf("publish %s: %w", name, err)
 	}
-	return syncDirectory(s.dir)
+	return syncDirectory(dir)
 }

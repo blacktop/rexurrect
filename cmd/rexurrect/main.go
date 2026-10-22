@@ -22,6 +22,17 @@ import (
 
 var version = "dev"
 
+// printScrollbackSkips lists the blocks whose scrollback was skipped, so a
+// manual save or restore never looks fully successful when it was not.
+func printScrollbackSkips(w io.Writer, what string, skips []snapshot.ScrollbackSkip) error {
+	var err error
+	for _, skip := range skips {
+		_, printErr := fmt.Fprintf(w, "Block %s: scrollback %s (%s)\n", skip.BlockID, what, skip.Reason)
+		err = errors.Join(err, printErr)
+	}
+	return err
+}
+
 func reportRexSubstitution(stderr io.Writer, sub *rexbin.Substitution) error {
 	if sub == nil {
 		return nil
@@ -120,7 +131,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err := rex.ValidateCallTimeout(*callTimeout); err != nil {
 		return err
 	}
-	client := rex.Client{Binary: *binary, Socket: socket, CallTimeout: *callTimeout, Scrollback: captureScrollback}
+	client := rex.Client{Binary: *binary, Socket: socket, CallTimeout: *callTimeout, Scrollback: captureScrollback, Keychain: keychainStore()}
 	if command == "auto" {
 		var err error
 		stdout, err = autolog.Wrap(stdout, filepath.Join(*dir, autolog.OutName), logMaxBytes)
@@ -168,7 +179,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_, printErr := fmt.Fprintf(stdout, "Pruned receipt %s\n", id)
 			err = errors.Join(err, printErr)
 		}
-		return err
+		return errors.Join(err, printScrollbackSkips(stdout, "not captured", saved.Report.ScrollbackSkipped))
 	}
 	if command == "restore" {
 		result, restoreErr := client.RestoreSaved(ctx, *dir, generation)
@@ -196,6 +207,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_, err := fmt.Fprintf(stdout, "Block %s: %s not resumed (%s)\n", skip.BlockID, skip.Harness, skip.Reason)
 			printErr = errors.Join(printErr, err)
 		}
+		printErr = errors.Join(printErr, printScrollbackSkips(stdout, "not replayed", result.ScrollbackSkipped))
 		return errors.Join(restoreErr, printErr)
 	}
 	status, err := client.Status(ctx, *dir)

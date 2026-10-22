@@ -15,6 +15,12 @@ import (
 	"github.com/blacktop/rexurrect/internal/state"
 )
 
+// keychainStore is the login-keychain store every command shares; tests
+// substitute the security tool through REXURRECT_SECURITY_TOOL.
+func keychainStore() keychain.Store {
+	return keychain.Store{Service: rex.ScrollbackKeychainService, Security: os.Getenv("REXURRECT_SECURITY_TOOL")}
+}
+
 // runScrollback implements `scrollback replay`, which a restored block runs
 // before its shell starts. It writes the block's decrypted scrollback to
 // stdout only after the whole sidecar authenticates, and writes nothing on
@@ -54,9 +60,7 @@ func runScrollback(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		return err
 	}
-	// REXURRECT_SECURITY_TOOL lets tests substitute the security tool; the
-	// default is the system one.
-	master, err := keychain.Store{Service: rex.ScrollbackKeychainService, Security: os.Getenv("REXURRECT_SECURITY_TOOL")}.Load(ctx, *keyID)
+	master, err := keychainStore().Load(ctx, *keyID)
 	if err != nil {
 		return err
 	}

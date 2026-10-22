@@ -747,6 +747,8 @@ A failed terminal read or sidecar write is a skip too (`scrollback read: …`,
 `scrollback sidecar: …`); only the save's own cancellation stops a capture. An
 empty capture provisions no key, and the publication guards (same host, empty
 snapshot over nonempty history) run before any scrollback state is written.
+`save` and `restore` print each skip (`Block …: scrollback not captured (…)`
+and `… not replayed (…)`); `auto --json` and `restore --json` carry the lists.
 
 Capture, per block: `terminal.modes` must report the primary screen, then
 `terminal.format` with `format: "vt", unwrap: true` (no `extra_*` flags), then
@@ -774,8 +776,9 @@ Key lifecycle: the master key lives in the login keychain under service
 stdin and read with `find-generic-password -w`, each call bounded by a 3 s
 deadline; a locked keychain prompts and blocks, so a timeout is "key
 unavailable", not an error. `scrollback/state.json` holds the nonsecret state
-ID, key ID, and a `pending`/`ready` status. Provisioning writes `pending`,
-creates the item, then `ready`; a `pending` record whose item exists is
+ID, key ID, and a `pending`/`ready` status. Provisioning writes and syncs
+`pending` in `scrollback/` (the temporary file lives beside it), creates the
+item, then writes `ready`; a `pending` record whose item exists is
 finalized. A `ready` key missing from the keychain is reported
 (`scrollback key missing from the keychain`) and never regenerated. A backup
 of the state directory does not contain the key.
@@ -803,11 +806,16 @@ decrypted bytes and then starts Rex's own login chain
 with the shell read from the directory service), so startup files run once as
 a login shell, the `Last login:` banner separates old output from new, and the
 agent `initial_input` is typed unchanged. The decryptor is
-`rexurrect scrollback replay --state-dir DIR --key-id ID --object-id ID --host ID --block ID`;
-it reads without the state lock (sidecars are immutable and pinned), writes
+`rexurrect scrollback replay --state-dir DIR --key-id ID --object-id ID --host ID --block ID`
+with the state directory made absolute, because the command runs in the
+block's restored cwd; it reads without the state lock (sidecars are immutable and pinned), writes
 to the terminal only after the whole blob authenticates, and writes nothing on
 any failure, so the shell starts either way. Replay is decided once per
-restore, so a lost acknowledgement cannot replay a block twice.
+restore and only for the sessions that invocation creates, so a lost
+acknowledgement cannot replay a block twice and a resumed restore neither
+re-pins nor reports sessions it already created. A restore deadline that
+expires while the key is loading fails the restore instead of degrading to
+plain shells, so no create intent is recorded under a cancelled context.
 
 `TestScrollbackCaptureAndReplayPrivateServer` runs this against a private Rex
 server with a file-backed keychain stand-in: capture with an alternate-screen

@@ -98,10 +98,13 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 		return out, err
 	}
 	// Scrollback replay is decided once, before any create, so a lost
-	// acknowledgement can never start a second replay for the same block.
+	// acknowledgement can never start a second replay for the same block. Only
+	// the sessions this invocation creates take part: completed and in-flight
+	// sessions keep their earlier decision and are neither re-pinned nor
+	// reported again.
 	var replay map[snapshot.SourceID]replayCommand
-	if slices.ContainsFunc(e.Snapshot.Sessions, func(session snapshot.Session) bool { return latest[session.ID].Outcome == "" }) {
-		replay, scrollbackSkipped, err = c.scrollbackReplay(ctx, store, store.Dir(), e)
+	if creating := creatingSessions(e, latest); len(creating.Snapshot.Sessions) != 0 {
+		replay, scrollbackSkipped, err = c.scrollbackReplay(ctx, store, store.Dir(), creating)
 		if err != nil {
 			return out, err
 		}
@@ -249,6 +252,15 @@ func restoreSessionCWD(session snapshot.Session, recorded map[snapshot.SourceID]
 		session.Windows[i].Layout = layout
 	}
 	return session, substitutions, nil
+}
+
+// creatingSessions is e restricted to the sessions a restore has not yet
+// attempted, the only ones whose blocks can start with a replay command.
+func creatingSessions(e state.Envelope, latest map[snapshot.SourceID]state.JournalRecord) state.Envelope {
+	e.Snapshot.Sessions = slices.DeleteFunc(slices.Clone(e.Snapshot.Sessions), func(session snapshot.Session) bool {
+		return latest[session.ID].Outcome != ""
+	})
+	return e
 }
 
 func (c Client) checkInstance(ctx context.Context, want serverIdentity) error {

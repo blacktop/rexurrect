@@ -169,8 +169,11 @@ func TestScrollbackPruneKeepsRetainedAndPinned(t *testing.T) {
 		}
 	}
 	tempPath := filepath.Join(s.dir, scrollbackDir, refs["orphan"].KeyID, ".tmp-leftover")
-	if err := os.WriteFile(tempPath, []byte("partial"), 0600); err != nil {
-		t.Fatal(err)
+	rootTemp := filepath.Join(s.dir, scrollbackDir, ".tmp-leftover")
+	for _, path := range []string{tempPath, rootTemp} {
+		if err := os.WriteFile(path, []byte("partial"), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	publish := func(ref snapshot.ScrollbackRef) Envelope {
 		t.Helper()
@@ -206,8 +209,10 @@ func TestScrollbackPruneKeepsRetainedAndPinned(t *testing.T) {
 			t.Errorf("%s sidecar present=%t, want %t", name, got, want)
 		}
 	}
-	if _, err := os.Lstat(tempPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("temporary file survived prune")
+	for _, path := range []string{tempPath, rootTemp} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("temporary file survived prune: %s", path)
+		}
 	}
 	if _, err := os.Lstat(filepath.Join(s.dir, scrollbackDir, scrollbackPinsDir, "1")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("expired pin survived prune")
@@ -309,5 +314,42 @@ func TestScrollbackRefusesSymlinkedDirectories(t *testing.T) {
 	}
 	if err := s.PruneScrollback(); err == nil {
 		t.Error("PruneScrollback accepted a shared key directory")
+	}
+}
+
+// State records and pins are written beside their destination, never through
+// the state root, so the pending record is durable in scrollback/ before the
+// keychain item exists.
+func TestScrollbackStateWritesBesideDestination(t *testing.T) {
+	s := openStore(t)
+	if _, err := s.subdirectory(scrollbackDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(s.dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(s.dir, 0700); err != nil {
+			t.Error(err)
+		}
+	})
+	record := scrollbackState{FormatVersion: 1, StateID: strings.Repeat("cd", 16), KeyID: strings.Repeat("ab", 16), Status: "pending"}
+	if err := s.writeScrollbackState(record); err != nil {
+		t.Fatalf("pending record went through the state root: %v", err)
+	}
+	if got, err := s.readScrollbackState(); err != nil || got != record {
+		t.Fatalf("read back: %+v %v", got, err)
+	}
+	if err := s.PinScrollback(scrollbackEnvelope(testRef(1))); err != nil {
+		t.Fatalf("pin went through the state root: %v", err)
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".tmp-") {
+			t.Fatalf("temporary file in the state root: %s", entry.Name())
+		}
 	}
 }

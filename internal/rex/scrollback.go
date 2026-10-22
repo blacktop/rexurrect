@@ -261,6 +261,12 @@ func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, dir st
 	}
 	stateID, _, master, err := store.ScrollbackKey(ctx, c.keychainStore())
 	if err != nil {
+		// A key load that failed because the restore itself was cancelled
+		// must fail the restore; degrading it would record an intent under
+		// a context the next server check immediately refuses.
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
 		return skipAll(skipReason(err))
 	}
 	executable, err := rexurrectExecutable()
@@ -269,6 +275,12 @@ func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, dir st
 	}
 	if err != nil {
 		return skipAll("rexurrect executable path: " + bounded(err.Error(), 200))
+	}
+	// The replay command runs in the restored block's cwd, so a relative
+	// state directory must be made absolute before it is embedded.
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return skipAll("state directory path: " + bounded(err.Error(), 200))
 	}
 	me, err := user.Current()
 	if err != nil || me.Username == "" {

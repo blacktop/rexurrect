@@ -250,6 +250,12 @@ func (s *Store) PruneScrollback() error {
 		return err
 	}
 	for _, key := range keys {
+		if key.Type().IsRegular() && strings.HasPrefix(key.Name(), ".tmp-") {
+			if err := os.Remove(filepath.Join(root, key.Name())); err != nil {
+				return err
+			}
+			continue
+		}
 		if !key.IsDir() || !keychain.ValidKeyID(key.Name()) {
 			continue
 		}

@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/blacktop/rexurrect/internal/keychain/keychaintest"
 	"github.com/blacktop/rexurrect/internal/rex"
 	"github.com/blacktop/rexurrect/internal/snapshot"
 	"github.com/blacktop/rexurrect/internal/state"
@@ -153,5 +155,47 @@ esac
 	out.Reset()
 	if err := run(t.Context(), base, &out, &diagnostic); err != nil || !strings.Contains(out.String(), "Journal complete_missing") || !strings.Contains(out.String(), "Missing completed session missing-live-session\n") {
 		t.Fatalf("missing-session text status: %s %v", out.String(), err)
+	}
+}
+
+// The human restore output names every block whose scrollback was not
+// replayed, and the CLI reaches the keychain only through the configured
+// security tool.
+func TestRestoreTextPrintsScrollbackSkips(t *testing.T) {
+	fake := keychaintest.New(t, rex.ScrollbackKeychainService)
+	t.Setenv("REXURRECT_SECURITY_TOOL", fake.Security)
+	root := t.TempDir()
+	dir, binary := filepath.Join(root, "state"), filepath.Join(root, "rex")
+	if err := os.WriteFile(binary, []byte(`#!/bin/sh
+case "$6:$8" in
+  whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"new-instance","rex_version":"version"}' ;;
+  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  *) exit 1 ;;
+esac
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := snapshot.SourceID("block:01234567-89ab-4cde-8fab-0123456789ab")
+	ref := snapshot.ScrollbackRef{KeyID: strings.Repeat("ab", 16), ObjectID: strings.Repeat("cd", 32)}
+	e := state.Envelope{CapturedAt: time.Now().UTC(), RexVersion: "version", Commit: "commit", HostID: "host", InstanceID: "saved-instance", Report: &snapshot.Report{},
+		Snapshot: snapshot.Snapshot{Version: snapshot.Version, Sessions: []snapshot.Session{{ID: "session:01234567-89ab-4cde-8fab-0123456789ab", ActiveWindow: "window",
+			Windows: []snapshot.Window{{ID: "window", LayerID: "layer", Focus: block, Layout: snapshot.Node{Block: &snapshot.Block{ID: block, CWD: "/", Scrollback: &ref}}}}}}}}
+	_, publishErr := s.Publish(e, false)
+	if err := errors.Join(publishErr, s.Close()); err != nil {
+		t.Fatal(err)
+	}
+	var out, diagnostic bytes.Buffer
+	if err := run(t.Context(), []string{"restore", "--server", "unix:///private/tmp/unused", "--state-dir", dir, "--rex", binary}, &out, &diagnostic); err == nil {
+		t.Fatal("restore succeeded against a Rex stub that cannot create sessions")
+	}
+	if want := "Block " + string(block) + ": scrollback not replayed (scrollback sidecar unreadable)\n"; !strings.Contains(out.String(), want) {
+		t.Fatalf("restore output lacks %q:\n%s", want, out.String())
+	}
+	if items, err := os.ReadDir(fake.Items); err != nil || len(items) != 1 {
+		t.Fatalf("restore did not provision through the substituted security tool: %v %v", items, err)
 	}
 }
