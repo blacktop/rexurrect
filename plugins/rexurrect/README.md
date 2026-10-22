@@ -1,10 +1,10 @@
 # rexurrect agent plugin
 
-This package connects Codex and Claude Code lifecycle hooks to rexurrect's
-explicit receipt store. A fresh conversation records its own UUID and the
-command that launched it; a normal exit clears only the matching receipt.
-After a Rex restart, rexurrect types that command's `resume` form into the
-restored pane.
+This package connects Codex and Claude Code lifecycle hooks, and an omp
+extension, to rexurrect's explicit receipt store. A fresh conversation records
+its own UUID and the command that launched it; a normal exit clears only the
+matching receipt. After a Rex restart, rexurrect types that command's `resume`
+form into the restored pane.
 
 The plugin needs an installed `rexurrect` whose `receipt set` accepts `--host`
 and `--command` (receipt store format 2), plus `rex` and `jq` on the hook's
@@ -58,7 +58,7 @@ POSIX `sh` script that works from any shell. Install it on your PATH:
 install -m 0755 /path/to/rexurrect/plugins/rexurrect/shell/rexurrect-launch "$HOME/.local/bin/"
 ```
 
-Then make `codex` and `claude` go through it. The function name is the
+Then make `codex`, `claude`, and `omp` go through it. The function name is the
 harness: it is what rexurrect types after a restart, so it must resolve in
 your login shell.
 
@@ -73,12 +73,14 @@ fish (autoloaded functions):
 ```sh
 cp /path/to/rexurrect/plugins/rexurrect/shell/codex.fish "$HOME/.config/fish/functions/"
 cp /path/to/rexurrect/plugins/rexurrect/shell/claude.fish "$HOME/.config/fish/functions/"
+cp /path/to/rexurrect/plugins/rexurrect/shell/omp.fish "$HOME/.config/fish/functions/"
 ```
 
-Both files are one line per command: `rexurrect-launch codex codex "$@"` and
-`rexurrect-launch claude claude "$@"`. If you already wrap an agent in a
-function that sets up its environment, keep that setup and replace only the
-final launch with the matching `rexurrect-launch` line; pass the function's own
+Each file is one line per command: `rexurrect-launch codex codex "$@"`,
+`rexurrect-launch claude claude "$@"`, and `rexurrect-launch omp omp "$@"`.
+If you already wrap an agent in a function that sets up its environment, keep
+that setup and replace only the final launch with the matching
+`rexurrect-launch` line; pass the function's own
 name as the second argument. Do not `exec` it: the launcher must regain control
 to clear the receipt. Any bare command name works (letters, digits, `_`, `.`,
 `-`, at most 64 bytes); the first argument, the agent type, decides the resume
@@ -89,8 +91,9 @@ What the launcher does:
 - Exports `RR_HOST` (the agent type) and `RR_HARNESS` (the command name) to
   the agent so the hooks can prove which pane owns the conversation. Any
   marker already present, even empty, means a launcher or agent session is
-  above this one; such launches, agent tool shells, and launches outside a Rex
-  pane run the agent directly with both markers blank.
+  above this one; so does `CLAUDECODE`, `CODEX_THREAD_ID`, or `OMPCODE`, which
+  Claude Code, Codex, and omp put in their tool shells. Such launches and
+  launches outside a Rex pane run the agent directly with both markers blank.
 - Inside Rex, starts Codex with `--no-daemon`. The shared Codex app-server
   daemon outlives a pane, runs hooks with its own environment, and does not end
   a thread when the pane closes, so a daemon-attached session can never be
@@ -100,7 +103,7 @@ What the launcher does:
   that daemon.
 - Records `--model`/`-m` and `--effort` or `-c model_reasoning_effort=` from
   the arguments as defaults for the hook, because the hook payloads omit the
-  effort and Claude's may omit the model.
+  effort and Claude's may omit the model. omp ignores both.
 - After the agent exits, clears the pane's receipt registered under this
   command name with rexurrect's normal lock wait. The SessionEnd hook is a
   best-effort first attempt under its host's short deadline; this is the
@@ -108,10 +111,11 @@ What the launcher does:
 - Preserves the arguments, the environment, and the exit status. A failed
   cleanup returns its own error instead of the agent's status.
 
-To launch an executable that is not the PATH `codex` or `claude`, set
-`REXURRECT_CODEX` or `REXURRECT_CLAUDE` in the function before calling the
-launcher. If rexurrect's automatic job uses a non-default endpoint or state
-directory, export `REXURRECT_SERVER` and `REXURRECT_STATE_DIR` there too. The
+To launch an executable that is not the PATH `codex`, `claude`, or `omp`, set
+`REXURRECT_CODEX`, `REXURRECT_CLAUDE`, or `REXURRECT_OMP` in the function
+before calling the launcher. If rexurrect's automatic job uses a non-default
+endpoint or state directory, export `REXURRECT_SERVER` and
+`REXURRECT_STATE_DIR` there too. The
 defaults are:
 
 ```text
@@ -140,16 +144,22 @@ default.
 
 ## omp
 
-omp needs no launcher. `omp/rexurrect.ts` is an omp extension; symlink or copy
-it into omp's extension directory:
+omp registers through an extension instead of hooks, and uses the launcher above
+for ownership: define the `omp` function (`rexurrect.sh` or `omp.fish`) and keep
+`rexurrect-launch` on your PATH. Then symlink or copy the extension into omp's
+extension directory:
 
 ```sh
 ln -s /path/to/rexurrect/plugins/rexurrect/omp/rexurrect.ts "$HOME/.omp/agent/extensions/rexurrect.ts"
 ```
 
-In a Rex pane, the interactive main session registers its receipt on start,
-switch, and branch, and clears it on exit; subagents and `omp -p` do not. After
-a restart, rexurrect types `omp --resume <session-id>`. The installed
+Inside a Rex pane started through the launcher, the interactive main session
+registers its receipt once the conversation is saved to disk (after its first
+reply, and again whenever the session changes), so a restart never resumes a
+conversation that does not exist. It clears the receipt on exit, and the
+launcher clears again after omp exits if that was missed. Subagents, `omp -p`,
+and an `omp` started from an agent's tool shell never touch the pane's receipt.
+After a restart, rexurrect types `omp --resume <session-id>`. The installed
 `rexurrect` must accept `--host omp`, and `omp` must resolve in your login
 shell.
 

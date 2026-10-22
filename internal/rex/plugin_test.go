@@ -73,7 +73,7 @@ func TestPluginMetadata(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, entry := range []string{"rexurrect.sh", "codex.fish", "claude.fish"} {
+	for _, entry := range []string{"rexurrect.sh", "codex.fish", "claude.fish", "omp.fish"} {
 		if _, err := os.Stat(filepath.Join(root, "shell", entry)); err != nil {
 			t.Fatal(err)
 		}
@@ -396,7 +396,7 @@ type launchCase struct {
 
 func (tc launchCase) owned() bool { return tc.owner != "" }
 
-// launchFixture installs fake codex, claude, and rexurrect executables that
+// launchFixture installs fake codex, claude, omp, and rexurrect executables that
 // record what the launcher passed them, next to the packaged shell files.
 func launchFixture(t *testing.T) (bin string) {
 	t.Helper()
@@ -418,12 +418,12 @@ exit "$RR_AGENT_STATUS"
 printf '%s\n' "$@" >> "$RR_CLEAR_PATH"
 exit "$RR_CLEAR_STATUS"
 `
-	for name, content := range map[string]string{"codex": agent, "claude": agent, "rexurrect": clear} {
+	for name, content := range map[string]string{"codex": agent, "claude": agent, "omp": agent, "rexurrect": clear} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"rexurrect-launch", "rexurrect.sh", "codex.fish", "claude.fish"} {
+	for _, name := range []string{"rexurrect-launch", "rexurrect.sh", "codex.fish", "claude.fish", "omp.fish"} {
 		if err := os.Symlink(filepath.Join(pack, "shell", name), filepath.Join(bin, name)); err != nil {
 			t.Fatal(err)
 		}
@@ -492,6 +492,7 @@ func checkLaunch(t *testing.T, bin string, tc launchCase, path string, args ...s
 var (
 	codexArgs  = []string{"arg with spaces", "-c", `model_reasoning_effort="high"`}
 	claudeArgs = []string{"arg with spaces", "--model", "model-1.2", "--effort", "high"}
+	ompArgs    = []string{"arg with spaces", "--resume", "01a15c18-8aae-7774-8c25-1eb59ff7f355"}
 )
 
 // ownedCodex is a Rex-pane launch of codex: --no-daemon is added and the
@@ -511,6 +512,19 @@ func plainCodex(name string, args []string, env ...string) launchCase {
 func ownedClaude(name string, args []string, model, effort string) launchCase {
 	return launchCase{name: name, host: "claude", command: "claude", args: args, owner: "claude",
 		model: model, effort: effort}
+}
+
+// ownedOmp is a Rex-pane launch of omp: no model or effort handling, and the
+// arguments pass through untouched.
+func ownedOmp(name string, args []string) launchCase {
+	return launchCase{name: name, host: "omp", command: "omp", args: args, owner: "omp"}
+}
+
+// plainOmp is a launch that must not own the pane: omp's tool shells carry
+// OMPCODE and CLAUDECODE, so a nested launch sees them.
+func plainOmp(name string, env ...string) launchCase {
+	return launchCase{name: name, host: "omp", command: "omp", args: ompArgs, env: env,
+		agent: 7, clear: 9, want: 7}
 }
 
 func TestPluginShellHelpers(t *testing.T) {
@@ -542,6 +556,18 @@ func TestPluginShellHelpers(t *testing.T) {
 		plainCodex("daemon-subcommand-after-options", []string{"-c", "model_reasoning_effort=high", "agents"}),
 		plainCodex("daemon-subcommand-remote-control", []string{"--enable", "x", "remote-control", "status"}),
 		ownedClaude("claude-success", claudeArgs, "model-1.2", "high"),
+		ownedOmp("omp-success", ompArgs),
+		{name: "omp-agent-failed", host: "omp", command: "omp", owner: "omp", args: ompArgs, agent: 7, want: 7},
+		{name: "omp-clear-failed", host: "omp", command: "omp", owner: "omp", args: ompArgs, clear: 9, want: 9},
+		{name: "omp-custom-command", host: "omp", command: "omp-work", owner: "omp-work", args: ompArgs},
+		plainOmp("omp-missing-block", "REX_BLOCK="),
+		plainOmp("omp-missing-session", "REX_SESSION="),
+		plainOmp("omp-nested-omp", "OMPCODE=1"),
+		plainOmp("omp-nested-claude", "CLAUDECODE=1"),
+		plainOmp("omp-nested-codex", "CODEX_THREAD_ID=outer"),
+		plainOmp("omp-preset-owner", "RR_HARNESS=omp"),
+		plainOmp("omp-blank-preset-owner", "RR_HARNESS="),
+		plainOmp("omp-foreign-host", "RR_HOST=claude"),
 		ownedClaude("claude-equals", []string{"--model=model-2", "--effort=low"}, "model-2", "low"),
 		ownedClaude("claude-defaults", []string{"prompt"}, "", ""),
 		ownedClaude("claude-after-separator", []string{"--", "--model", "ignored"}, "", ""),
@@ -558,7 +584,7 @@ func TestPluginShellHelpers(t *testing.T) {
 	}
 	t.Run("usage", func(t *testing.T) {
 		t.Parallel()
-		for _, args := range [][]string{{}, {"codex"}, {"vim", "vim"}, {"codex", ""}} {
+		for _, args := range [][]string{{}, {"codex"}, {"vim", "vim"}, {"codex", ""}, {"omp", ""}} {
 			cmd := exec.CommandContext(t.Context(), "/bin/sh", append([]string{launcher}, args...)...)
 			cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
 			if err := cmd.Run(); err == nil || cmd.ProcessState.ExitCode() != 2 {
@@ -571,10 +597,12 @@ func TestPluginShellHelpers(t *testing.T) {
 	entries := map[string]launchCase{
 		"codex":  ownedCodex("codex", 0, 0, 0),
 		"claude": ownedClaude("claude", []string{"x", "--model", "model-1.2", "--effort", "high"}, "model-1.2", "high"),
+		"omp":    ownedOmp("omp", []string{"x", "--resume", "abc"}),
 	}
 	invoke := map[string]string{
 		"codex":  `codex 'arg with spaces' -c 'model_reasoning_effort="high"'`,
 		"claude": `claude x --model model-1.2 --effort high`,
+		"omp":    `omp x --resume abc`,
 	}
 	source := `. "` + filepath.Join(bin, "rexurrect.sh") + `"`
 	for _, shell := range []struct {
@@ -583,7 +611,7 @@ func TestPluginShellHelpers(t *testing.T) {
 	}{
 		{"bash", source, func(script string) []string { return []string{"--noprofile", "--norc", "-c", script} }},
 		{"zsh", source, func(script string) []string { return []string{"-f", "-c", script} }},
-		{"fish", `source "` + filepath.Join(bin, "codex.fish") + `"; source "` + filepath.Join(bin, "claude.fish") + `"`,
+		{"fish", `source "` + filepath.Join(bin, "codex.fish") + `"; source "` + filepath.Join(bin, "claude.fish") + `"; source "` + filepath.Join(bin, "omp.fish") + `"`,
 			func(script string) []string { return []string{"--no-config", "--private", "-c", script} }},
 	} {
 		path, err := exec.LookPath(shell.name)

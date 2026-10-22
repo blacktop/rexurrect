@@ -6,11 +6,11 @@ output, with anything private removed.
 
 ## Build
 
-Development requires macOS, Rex, Go 1.27, and `just`. The tests also use Fish and
-`jq`.
+Development requires macOS, Rex, Go 1.27, and `just`. The tests also use Fish, Bun,
+and `jq`.
 
 ```fish
-brew install go just fish jq
+brew install go just fish jq bun
 git clone https://github.com/blacktop/rexurrect.git
 cd rexurrect
 just build
