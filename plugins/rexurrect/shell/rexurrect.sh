@@ -6,3 +6,4 @@
 # Each function's name is the harness rexurrect replays after a restart.
 codex() { rexurrect-launch codex codex "$@"; }
 claude() { rexurrect-launch claude claude "$@"; }
+omp() { rexurrect-launch omp omp "$@"; }

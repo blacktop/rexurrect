@@ -34,6 +34,8 @@ func wantInput(host, name string, optional bool) string {
 		if optional {
 			want += ` -m model-1.2 -c model_reasoning_effort="high"`
 		}
+	case "omp":
+		want = name + " --resume " + testConversation
 	default:
 		return ""
 	}
@@ -41,11 +43,18 @@ func wantInput(host, name string, optional bool) string {
 }
 
 func TestInitialInputByHost(t *testing.T) {
-	for _, tc := range []struct{ host, command string }{
-		{"claude", "claude"}, {"claude", "claude-work"}, {"claude", "my_claude.v2"},
-		{"codex", "codex"}, {"codex", "codex-work"}, {"codex", "Codex_Team"},
+	for _, tc := range []struct {
+		host, command string
+		noOptional    bool // host takes no model or effort
+	}{
+		{"claude", "claude", false}, {"claude", "claude-work", false}, {"claude", "my_claude.v2", false},
+		{"codex", "codex", false}, {"codex", "codex-work", false}, {"codex", "Codex_Team", false},
+		{"omp", "omp", true}, {"omp", "omp-work", true},
 	} {
 		for _, optional := range []bool{false, true} {
+			if optional && tc.noOptional {
+				continue
+			}
 			r := commandReceipt(tc.host, tc.command)
 			if !optional {
 				r.Model, r.Effort = "", ""
@@ -54,6 +63,26 @@ func TestInitialInputByHost(t *testing.T) {
 				t.Errorf("%s %s optional=%t: %q, want %q", tc.host, tc.command, optional, got, want)
 			}
 		}
+	}
+}
+
+func TestOmpRejectsModelAndEffort(t *testing.T) {
+	valid := commandReceipt("omp", "omp")
+	valid.Model, valid.Effort = "", ""
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Receipt)
+	}{
+		{"model", func(r *Receipt) { r.Model = "model-1.2" }},
+		{"effort", func(r *Receipt) { r.Effort = "high" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := valid
+			tc.mutate(&r)
+			if err := r.Validate(); err == nil {
+				t.Errorf("Validate(%+v) = nil, want error", r)
+			}
+		})
 	}
 }
 
