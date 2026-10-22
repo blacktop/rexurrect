@@ -295,57 +295,50 @@ func TestReceiptRebindingPreservesLiveSources(t *testing.T) {
 
 func TestAgentResumeRoundTrip(t *testing.T) {
 	requireLoginShell(t)
-	fish := requireFish(t)
 	var marker, exited string
 	s := newIsolatedServerWithSetup(t, func(s *isolatedServer) {
 		marker = filepath.Join(s.root, "agent-argv")
 		exited = filepath.Join(s.root, "agent-exited")
 		binary := buildReceiptCLI(t, s.root)
-		// Rex resolves the login shell with dscl and falls back to $SHELL when
-		// the directory service stalls, which happens for a second or two
-		// after the first server's shells exit. The functions below exist only
-		// for fish, so the fallback has to be fish. This later SHELL entry wins
-		// over the harness's default of /bin/sh.
-		s.client.Env = append(s.client.Env, "SHELL="+fish)
 		for _, path := range []string{marker, exited} {
 			if err := os.WriteFile(path, nil, 0600); err != nil {
 				t.Fatal(err)
 			}
 		}
-		// Both paths are inside the private HOME. XDG_CONFIG_HOME is explicit
-		// in this server's environment, and .config also covers login defaults.
-		for _, base := range []string{"config", ".config"} {
-			dir := filepath.Join(s.root, "home", base, "fish", "functions")
-			if err := os.MkdirAll(dir, 0700); err != nil {
-				t.Fatal(err)
+		// The agents are executables on PATH, so they resolve in whichever
+		// shell Rex starts. Custom command names register through the real
+		// receipt CLI with an explicit host. Legacy-only names never get a
+		// live agent that registers; a typed command for them would be a test
+		// failure.
+		bin := filepath.Join(s.root, "bin")
+		if err := os.Mkdir(bin, 0700); err != nil {
+			t.Fatal(err)
+		}
+		for i, kv := range s.client.Env {
+			if path, ok := strings.CutPrefix(kv, "PATH="); ok {
+				s.client.Env[i] = "PATH=" + bin + ":" + path
 			}
-			// Custom command names register through the real receipt CLI with an
-			// explicit host. Legacy-only names never get a live function that
-			// registers; a typed command for them would be a test failure.
-			for name, host := range map[string]string{"claude-work": "claude", "codex-work": "codex", "omp-work": "omp", "claude-team": "", "future-agent": ""} {
-				// omp resumes by conversation alone; claude and codex also carry
-				// a model and an effort.
-				metadata := ` --model "$argv[4]" --effort (string replace 'model_reasoning_effort=' '' -- $argv[6])`
-				if host == "omp" {
-					metadata = ""
-				}
-				body := fmt.Sprintf(`function %[1]s
-    set -l rr_id $argv[2]
-    '%[2]s' receipt set --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --host %[8]s --command %[1]s --conversation "$rr_id"%[9]s
-    or return
-    printf '%%s\t%%s\t%%s\t%%s\n' "$REX_SESSION" "$REX_BLOCK" (pwd -P) (string join \t -- %[1]s $argv) >> '%[6]s'
-    read -l rr_wait; or return
-    '%[2]s' receipt clear --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --command %[1]s --conversation "$rr_id"
-    or return
-    printf '%%s\n' "$REX_BLOCK" >> '%[7]s'
-end
+		}
+		for name, host := range map[string]string{"claude-work": "claude", "codex-work": "codex", "omp-work": "omp", "claude-team": "", "future-agent": ""} {
+			// omp resumes by conversation alone; claude and codex also carry
+			// a model and an effort.
+			metadata := ` --model "$4" --effort "${6#model_reasoning_effort=}"`
+			if host == "omp" {
+				metadata = ""
+			}
+			body := fmt.Sprintf(`#!/bin/sh
+'%[2]s' receipt set --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --host %[8]s --command %[1]s --conversation "$2"%[9]s || exit $?
+line=$(printf '%%s\t%%s\t%%s\t%%s' "$REX_SESSION" "$REX_BLOCK" "$(pwd -P)" %[1]s; for arg; do printf '\t%%s' "$arg"; done)
+printf '%%s\n' "$line" >> '%[6]s'
+read -r rr_wait || exit 1
+'%[2]s' receipt clear --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --command %[1]s --conversation "$2" || exit $?
+printf '%%s\n' "$REX_BLOCK" >> '%[7]s'
 `, name, binary, s.client.Socket, filepath.Join(s.root, "saved"), s.client.Binary, marker, exited, host, metadata)
-				if host == "" {
-					body = fmt.Sprintf("function %[1]s\n    printf 'unexpected %[1]s\\n' >> '%[2]s'\nend\n", name, marker)
-				}
-				if err := os.WriteFile(filepath.Join(dir, name+".fish"), []byte(body), 0600); err != nil {
-					t.Fatal(err)
-				}
+			if host == "" {
+				body = fmt.Sprintf("#!/bin/sh\nprintf 'unexpected %[1]s\\n' >> '%[2]s'\n", name, marker)
+			}
+			if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0700); err != nil {
+				t.Fatal(err)
 			}
 		}
 	})
