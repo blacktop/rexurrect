@@ -147,6 +147,9 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 	if err != nil {
 		return state.Envelope{}, err
 	}
+	if err := attachForeground(store, &captured); err != nil {
+		return state.Envelope{}, err
+	}
 	// The automatic cycle passes the Current it already loaded and is the only
 	// caller that suppresses an unchanged publication; a manual save loads it
 	// here once for the guards and the retention set.

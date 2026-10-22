@@ -202,15 +202,16 @@ results take precedence over the general [Rex documentation](https://www.superlo
 
 ## Snapshot versions
 
-Generations written by this version use snapshot version 4. Version 1
+Generations written by this version use snapshot version 5. Version 1
 generations and journals written by `8974b2e`, version 2 generations written
-by v0.1.0 (`58c87d7`), and version 3 generations written by v0.1.1 still load
-and restore; the generation envelope, pointer, and journal binding formats
-remain unchanged. Agent receipts and receipt-pruning reports belong to
-snapshot v2; the host and command receipt form belongs to v3; encrypted
-scrollback references and the `scrollback_skipped` report belong to v4.
-Publishing upgrades an older snapshot in place without changing what any of
-its receipts replay.
+by v0.1.0 (`58c87d7`), version 3 generations written by v0.1.1, and version 4
+generations written by v0.2.0 still load and restore; the generation envelope,
+pointer, and journal binding formats remain unchanged. Agent receipts and
+receipt-pruning reports belong to snapshot v2; the host and command receipt
+form belongs to v3; encrypted scrollback references and the
+`scrollback_skipped` report belong to v4; recorded foreground commands and the
+`foreground_skipped` report belong to v5. Publishing upgrades an older
+snapshot in place without changing what any of its receipts replay.
 
 Downgrading cannot read newer generations and fails closed. The `8974b2e`
 reader rejects every v2 shape; `TestSnapshotV1Compatibility` compiles that exact
@@ -823,6 +824,47 @@ skip, sidecar reuse on an unchanged save, replay through the login chain with
 the agent command typed once and the replayed text never executed, and the
 missing-key degradation. `REXURRECT_SECURITY_TOOL` substitutes the security
 tool for that test only.
+
+## Foreground commands (S5)
+
+A restored pane gets the command it was running when it was saved typed at
+its new prompt, never executed, once the shell hook is installed:
+[`foreground.zsh`](../plugins/rexurrect/shell/foreground.zsh) sourced from
+`~/.zshrc`, or [`foreground.fish`](../plugins/rexurrect/shell/foreground.fish)
+sourced from `~/.config/fish/config.fish`. bash has no native `preexec` and is
+not supported. Nothing is inferred from processes: without the hook no pane
+has a record, and `ps` is never consulted.
+
+Recording: the hook's `preexec` writes the command line as typed to
+`<state-dir>/foreground/<block-uuid>` (a private temporary file renamed into
+place, under `umask 077`, with no lock, no Rex call, and no subprocess), and
+`precmd`/`fish_postexec` removes it, so a record exists only while a
+foreground command is running. That is exactly what a restart interrupts; a
+command that finished is never typed back, so no ignore list exists. The hook
+installs only in the outermost shell of a pane (`REX_BLOCK` set,
+`RR_FOREGROUND` unset, then exported), so agent tool shells, `su`, and
+`nix-shell` inherit the marker and stay silent. A command typed with a leading
+space is not recorded.
+
+Capture, per shell block: the record is read with the same private-file
+rules as every state file (0600, no symlinks, directory 0700), trimmed, and
+must be one line of printable UTF-8 of at most 1024 bytes (no control
+characters, which includes the newline that would run it). A usable record
+becomes `block.foreground`; an unusable one is reported in
+`report.foreground_skipped` (`save` prints `Block …: foreground not recorded
+(…)`, `auto --json` carries the list), and a records directory that is not
+private skips every block. Records of blocks that no longer exist and stale
+temporary files are deleted after a one-minute grace, so a pane created
+during a capture keeps its record.
+
+Restore: a block with an agent receipt types the receipt's resume command
+(and runs it) as before; otherwise a block with a foreground command gets it
+as `initial_input` without a trailing newline. Such a block starts through
+the same clearing login chain as a scrollback replay (without the decryptor
+when it has no sidecar to replay), because the terminal echoes typed initial
+input before any process can take it and the clear removes that stray copy.
+The command sits at the prompt after any replayed scrollback and the login
+banner, ready for Enter or Ctrl-C.
 
 ## Per-user LaunchAgent (S2b)
 

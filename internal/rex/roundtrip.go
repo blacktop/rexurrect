@@ -329,6 +329,9 @@ func layout(n snapshot.Node, leaves *[]snapshot.SourceID, replay map[snapshot.So
 		options := shellOptions{CWD: b.CWD}
 		if b.AgentResume != nil {
 			options.InitialInput = b.AgentResume.InitialInput()
+		} else if b.Foreground != "" {
+			// Typed at the prompt, never run: no newline follows it.
+			options.InitialInput = b.Foreground
 		}
 		if command, ok := replay[b.ID]; ok {
 			login := false

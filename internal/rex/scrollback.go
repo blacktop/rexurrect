@@ -24,13 +24,24 @@ const (
 	maxScrollbackPerGeneration = 32 << 20
 )
 
+// loginChain starts the shell exactly as Rex does for a default block (see
+// docs/.ai/evidence/2026-10-21-scrollback-contract-probe.md §4), for the user
+// named by the first positional argument.
+const loginChain = `shell=$(dscl . -read "/Users/$1" UserShell | sed "s/^UserShell: //"); exec /usr/bin/login -flp "$1" /bin/bash --noprofile --norc -c 'name=$1; shift; exec -a "-$name" -- "$@"' rex-login "${shell##*/}" "$shell"`
+
+// clearScreen wipes the terminal, including whatever it echoed of a typed
+// initial input before any process could take it.
+const clearScreen = `printf "\033[H\033[2J\033[3J"; `
+
 // replayScript prints a block's decrypted scrollback and then starts the
-// shell exactly as Rex does for a default block (see
-// docs/.ai/evidence/2026-10-21-scrollback-contract-probe.md §4). Every
-// variable part arrives as a positional argument; the decryptor writes to the
-// terminal only after authenticating the whole blob and prints nothing on
-// failure, so the shell still starts either way.
-const replayScript = `printf "\033[H\033[2J\033[3J"; "$1" scrollback replay --state-dir "$2" --key-id "$3" --object-id "$4" --host "$5" --block "$6" 2>/dev/null; printf "\033[0m"; shell=$(dscl . -read "/Users/$7" UserShell | sed "s/^UserShell: //"); exec /usr/bin/login -flp "$7" /bin/bash --noprofile --norc -c 'name=$1; shift; exec -a "-$name" -- "$@"' rex-login "${shell##*/}" "$shell"`
+// login chain. Every variable part arrives as a positional argument; the
+// decryptor writes to the terminal only after authenticating the whole blob
+// and prints nothing on failure, so the shell still starts either way.
+const replayScript = clearScreen + `"$2" scrollback replay --state-dir "$3" --key-id "$4" --object-id "$5" --host "$6" --block "$7" 2>/dev/null; printf "\033[0m"; ` + loginChain
+
+// typedScript starts the login chain on a clean screen for a block whose
+// foreground command is typed back without a scrollback replay.
+const typedScript = clearScreen + loginChain
 
 var rexErrorCode = regexp.MustCompile(`\(status=\d+ code=([a-z_]+)\)`)
 
@@ -90,7 +101,7 @@ func (c Client) captureScrollback(ctx context.Context, store *state.Store, e *st
 		}
 		for _, session := range e.Snapshot.Sessions {
 			for _, b := range session.Blocks() {
-				e.Report.ScrollbackSkipped = append(e.Report.ScrollbackSkipped, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: skipReason(keyErr)})
+				e.Report.ScrollbackSkipped = append(e.Report.ScrollbackSkipped, snapshot.Skip{BlockID: b.ID, Reason: skipReason(keyErr)})
 			}
 		}
 		return nil
@@ -103,7 +114,7 @@ func (c Client) captureScrollback(ctx context.Context, store *state.Store, e *st
 				return err
 			}
 			if reason != "" {
-				e.Report.ScrollbackSkipped = append(e.Report.ScrollbackSkipped, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: reason})
+				e.Report.ScrollbackSkipped = append(e.Report.ScrollbackSkipped, snapshot.Skip{BlockID: b.ID, Reason: reason})
 				continue
 			}
 			b.Scrollback = ref
@@ -240,7 +251,7 @@ type replayCommand []string
 // authenticate now. Blocks that cannot are reported and restored as plain
 // shells. A successful decision pins the sidecars for the restore; if the pin
 // cannot be written, every replay becomes a skip and the restore continues.
-func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, e state.Envelope) (map[snapshot.SourceID]replayCommand, []snapshot.ScrollbackSkip, error) {
+func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, e state.Envelope) (map[snapshot.SourceID]replayCommand, []snapshot.Skip, error) {
 	var referenced []*snapshot.Block
 	for _, session := range e.Snapshot.Sessions {
 		for _, b := range session.Blocks() {
@@ -252,10 +263,10 @@ func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, e stat
 	if len(referenced) == 0 {
 		return nil, nil, nil
 	}
-	var skips []snapshot.ScrollbackSkip
-	skipAll := func(reason string) (map[snapshot.SourceID]replayCommand, []snapshot.ScrollbackSkip, error) {
+	var skips []snapshot.Skip
+	skipAll := func(reason string) (map[snapshot.SourceID]replayCommand, []snapshot.Skip, error) {
 		for _, b := range referenced {
-			skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: reason})
+			skips = append(skips, snapshot.Skip{BlockID: b.ID, Reason: reason})
 		}
 		return nil, skips, nil
 	}
@@ -278,16 +289,16 @@ func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, e stat
 		keyID, objectID, parseErr := b.Scrollback.Parse()
 		blob, readErr := store.ReadScrollback(*b.Scrollback)
 		if err := errors.Join(parseErr, readErr); err != nil {
-			skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: "scrollback sidecar unreadable"})
+			skips = append(skips, snapshot.Skip{BlockID: b.ID, Reason: "scrollback sidecar unreadable"})
 			continue
 		}
 		binding := scrollback.Binding{StateID: stateID, HostID: e.HostID, BlockID: string(b.ID)}
 		if _, err := scrollback.Open(master, keyID, objectID, binding, blob); err != nil {
-			skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: "scrollback sidecar does not authenticate"})
+			skips = append(skips, snapshot.Skip{BlockID: b.ID, Reason: "scrollback sidecar does not authenticate"})
 			continue
 		}
 		commands[b.ID] = replayCommand{"/bin/bash", "--noprofile", "--norc", "-c", replayScript, "rexurrect",
-			executable, store.Dir(), b.Scrollback.KeyID, b.Scrollback.ObjectID, e.HostID, string(b.ID), username}
+			username, executable, store.Dir(), b.Scrollback.KeyID, b.Scrollback.ObjectID, e.HostID, string(b.ID)}
 	}
 	if len(commands) == 0 {
 		return nil, skips, nil
@@ -298,7 +309,7 @@ func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, e stat
 		reason := "scrollback pin: " + bounded(err.Error(), 200)
 		for _, b := range referenced {
 			if _, ok := commands[b.ID]; ok {
-				skips = append(skips, snapshot.ScrollbackSkip{BlockID: b.ID, Reason: reason})
+				skips = append(skips, snapshot.Skip{BlockID: b.ID, Reason: reason})
 			}
 		}
 		return nil, skips, nil
@@ -317,9 +328,45 @@ func replayEnvironment() (executable, username, reason string) {
 	if err != nil {
 		return "", "", "rexurrect executable path: " + bounded(err.Error(), 200)
 	}
-	me, err := user.Current()
-	if err != nil || me.Username == "" {
+	username, ok := currentUsername()
+	if !ok {
 		return "", "", "current user unknown"
 	}
-	return executable, me.Username, ""
+	return executable, username, ""
+}
+
+func currentUsername() (string, bool) {
+	me, err := user.Current()
+	if err != nil || me.Username == "" {
+		return "", false
+	}
+	return me.Username, true
+}
+
+// typedStarts gives every block whose foreground command will be typed, and
+// which has no replay command already, a start command that clears the
+// screen before Rex's login chain. The terminal echoes typed initial input
+// before any process can take it, and without the clear that stray copy
+// would sit above the login banner. A block with an agent receipt keeps
+// Rex's default start, as before.
+func typedStarts(e state.Envelope, commands map[snapshot.SourceID]replayCommand) map[snapshot.SourceID]replayCommand {
+	username, ok := currentUsername()
+	if !ok {
+		return commands
+	}
+	for _, session := range e.Snapshot.Sessions {
+		for _, b := range session.Blocks() {
+			if b.Foreground == "" || b.AgentResume != nil {
+				continue
+			}
+			if _, ok := commands[b.ID]; ok {
+				continue
+			}
+			if commands == nil {
+				commands = make(map[snapshot.SourceID]replayCommand)
+			}
+			commands[b.ID] = replayCommand{"/bin/bash", "--noprofile", "--norc", "-c", typedScript, "rexurrect", username}
+		}
+	}
+	return commands
 }

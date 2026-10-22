@@ -129,7 +129,7 @@ func TestScrollbackCaptureAndReplayPrivateServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Snapshot.Version != 4 {
+	if saved.Snapshot.Version != snapshot.Version {
 		t.Fatalf("snapshot version %d", saved.Snapshot.Version)
 	}
 	var plainRef *snapshot.ScrollbackRef

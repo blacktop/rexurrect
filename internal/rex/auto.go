@@ -28,10 +28,10 @@ type AutoResult struct {
 	Reason                   string                     `json:"reason,omitempty"`
 	CWDSubstitutions         []state.CWDSubstitution    `json:"cwd_substitutions,omitempty"`
 	NotResumed               []state.AgentNotResumed    `json:"not_resumed,omitempty"`
-	ScrollbackSkipped        []snapshot.ScrollbackSkip  `json:"scrollback_skipped,omitempty"`
+	ScrollbackSkipped        []snapshot.Skip            `json:"scrollback_skipped,omitempty"`
 	PrunedReceipts           []snapshot.SourceID        `json:"pruned_receipts,omitempty"`
 	CaptureCWDSubstitutions  []snapshot.CWDSubstitution `json:"capture_cwd_substitutions,omitempty"`
-	CaptureScrollbackSkipped []snapshot.ScrollbackSkip  `json:"capture_scrollback_skipped,omitempty"`
+	CaptureScrollbackSkipped []snapshot.Skip            `json:"capture_scrollback_skipped,omitempty"`
 }
 
 // AutoCycle holds the same nonblocking lock as manual save and restore for its

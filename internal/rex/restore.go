@@ -48,7 +48,7 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 		return out, err
 	}
 	out = j.Status(e)
-	var scrollbackSkipped []snapshot.ScrollbackSkip
+	var scrollbackSkipped []snapshot.Skip
 	defer func() {
 		acknowledged := out.IDMap
 		out = j.Status(e)
@@ -108,6 +108,7 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 		if err != nil {
 			return out, err
 		}
+		replay = typedStarts(creating, replay)
 	}
 	for _, session := range e.Snapshot.Sessions {
 		r := latest[session.ID]

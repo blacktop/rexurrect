@@ -232,7 +232,7 @@ func TestScrollbackSkipValidation(t *testing.T) {
 	e.Snapshot.Sessions = []snapshot.Session{{ID: "session:01234567-89ab-4cde-8fab-0123456789ab", ActiveWindow: "window",
 		Windows: []snapshot.Window{{ID: "window", LayerID: "layer", Focus: block,
 			Layout: snapshot.Node{Block: &snapshot.Block{ID: block, CWD: "/"}}}}}}
-	e.Report = &snapshot.Report{ScrollbackSkipped: []snapshot.ScrollbackSkip{{BlockID: block, Reason: "alternate screen"}}}
+	e.Report = &snapshot.Report{ScrollbackSkipped: []snapshot.Skip{{BlockID: block, Reason: "alternate screen"}}}
 	if err := e.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestScrollbackSkipValidation(t *testing.T) {
 		t.Fatalf("v3 accepted a scrollback skip: %v", err)
 	}
 	e.Snapshot.Version = snapshot.Version
-	for name, skips := range map[string][]snapshot.ScrollbackSkip{
+	for name, skips := range map[string][]snapshot.Skip{
 		"unknown block": {{BlockID: "block:ffffffff-89ab-4cde-8fab-0123456789ab", Reason: "x"}},
 		"session id":    {{BlockID: "session:01234567-89ab-4cde-8fab-0123456789ab", Reason: "x"}},
 		"empty reason":  {{BlockID: block, Reason: ""}},

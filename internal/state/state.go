@@ -76,12 +76,17 @@ func (e Envelope) Validate() error {
 	if e.Snapshot.Version < 4 && e.Report.ScrollbackSkipped != nil {
 		return errors.New("scrollback skips require snapshot version 4")
 	}
-	if len(e.Report.ScrollbackSkipped) > len(ids) {
-		return errors.New("excessive scrollback skips")
+	if e.Snapshot.Version < 5 && e.Report.ForegroundSkipped != nil {
+		return errors.New("foreground skips require snapshot version 5")
 	}
-	for _, skip := range e.Report.ScrollbackSkipped {
-		if ids[skip.BlockID] != "block" || !bounded(skip.Reason, 256) {
-			return errors.New("invalid scrollback skip")
+	for name, skips := range map[string][]snapshot.Skip{"scrollback": e.Report.ScrollbackSkipped, "foreground": e.Report.ForegroundSkipped} {
+		if len(skips) > len(ids) {
+			return fmt.Errorf("excessive %s skips", name)
+		}
+		for _, skip := range skips {
+			if ids[skip.BlockID] != "block" || !bounded(skip.Reason, 256) {
+				return fmt.Errorf("invalid %s skip", name)
+			}
 		}
 	}
 	// Match each substitution to the cwd actually stored for that block.

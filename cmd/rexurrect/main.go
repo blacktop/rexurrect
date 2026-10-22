@@ -22,12 +22,12 @@ import (
 
 var version = "dev"
 
-// printScrollbackSkips lists the blocks whose scrollback was skipped, so a
-// manual save or restore never looks fully successful when it was not.
-func printScrollbackSkips(w io.Writer, what string, skips []snapshot.ScrollbackSkip) error {
+// printSkips lists the blocks an optional feature skipped, so a manual save
+// or restore never looks fully successful when it was not.
+func printSkips(w io.Writer, what string, skips []snapshot.Skip) error {
 	var err error
 	for _, skip := range skips {
-		_, printErr := fmt.Fprintf(w, "Block %s: scrollback %s (%s)\n", skip.BlockID, what, skip.Reason)
+		_, printErr := fmt.Fprintf(w, "Block %s: %s (%s)\n", skip.BlockID, what, skip.Reason)
 		err = errors.Join(err, printErr)
 	}
 	return err
@@ -179,7 +179,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_, printErr := fmt.Fprintf(stdout, "Pruned receipt %s\n", id)
 			err = errors.Join(err, printErr)
 		}
-		return errors.Join(err, printScrollbackSkips(stdout, "not captured", saved.Report.ScrollbackSkipped))
+		err = errors.Join(err, printSkips(stdout, "scrollback not captured", saved.Report.ScrollbackSkipped))
+		return errors.Join(err, printSkips(stdout, "foreground not recorded", saved.Report.ForegroundSkipped))
 	}
 	if command == "restore" {
 		result, restoreErr := client.RestoreSaved(ctx, *dir, generation)
@@ -207,7 +208,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_, err := fmt.Fprintf(stdout, "Block %s: %s not resumed (%s)\n", skip.BlockID, skip.Harness, skip.Reason)
 			printErr = errors.Join(printErr, err)
 		}
-		printErr = errors.Join(printErr, printScrollbackSkips(stdout, "not replayed", result.ScrollbackSkipped))
+		printErr = errors.Join(printErr, printSkips(stdout, "scrollback not replayed", result.ScrollbackSkipped))
 		return errors.Join(restoreErr, printErr)
 	}
 	status, err := client.Status(ctx, *dir)

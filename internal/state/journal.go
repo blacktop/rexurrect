@@ -63,7 +63,7 @@ type JournalStatus struct {
 	NotResumed       []AgentNotResumed `json:"not_resumed,omitempty"`
 	// ScrollbackSkipped is decided by the running restore, not recorded in
 	// the journal: an older generation's journal keeps its format.
-	ScrollbackSkipped []snapshot.ScrollbackSkip `json:"scrollback_skipped,omitempty"`
+	ScrollbackSkipped []snapshot.Skip `json:"scrollback_skipped,omitempty"`
 }
 
 func NewOperationMarker() (string, error) {

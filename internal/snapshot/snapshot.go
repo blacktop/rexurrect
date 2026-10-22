@@ -9,13 +9,20 @@ import (
 	"reflect"
 	"syscall"
 
+	"errors"
 	"github.com/blacktop/rexurrect/internal/receipt"
 	"github.com/blacktop/rexurrect/internal/scrollback"
+	"strings"
+	"unicode/utf8"
 )
 
 // Version 2 added agent receipts; version 3 added their host and command form;
-// version 4 added encrypted scrollback references.
-const Version = 4
+// version 4 added encrypted scrollback references; version 5 added recorded
+// foreground commands.
+const Version = 5
+
+// MaxForeground bounds a recorded foreground command line in bytes.
+const MaxForeground = 1024
 
 type SourceID string
 type LiveID string
@@ -53,6 +60,31 @@ type Block struct {
 	CWD         string           `json:"cwd"`
 	AgentResume *receipt.Receipt `json:"agent_resume,omitempty"`
 	Scrollback  *ScrollbackRef   `json:"scrollback,omitempty"`
+	// Foreground is the command line the pane was running when it was saved,
+	// as the user typed it. Restore types it at the new prompt and never runs
+	// it; a receipt takes precedence.
+	Foreground string `json:"foreground,omitempty"`
+}
+
+// ValidForeground accepts one trimmed line of printable UTF-8 of at most
+// MaxForeground bytes. A control character could execute or corrupt the typed
+// text, so none is allowed, including the newline that would run it.
+func ValidForeground(command string) error {
+	if command == "" || len(command) > MaxForeground {
+		return fmt.Errorf("foreground command must be 1 to %d bytes", MaxForeground)
+	}
+	if !utf8.ValidString(command) {
+		return errors.New("foreground command is not valid UTF-8")
+	}
+	if strings.TrimSpace(command) != command {
+		return errors.New("foreground command has leading or trailing whitespace")
+	}
+	for _, r := range command {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("foreground command contains a control character")
+		}
+	}
+	return nil
 }
 
 // ScrollbackRef names the encrypted scrollback sidecar saved for a block: the
@@ -100,12 +132,13 @@ type Report struct {
 	Unsupported       []Unsupported     `json:"unsupported,omitempty"`
 	PrunedReceipts    []SourceID        `json:"pruned_receipts,omitempty"`
 	CWDSubstitutions  []CWDSubstitution `json:"cwd_substitutions,omitempty"`
-	ScrollbackSkipped []ScrollbackSkip  `json:"scrollback_skipped,omitempty"`
+	ScrollbackSkipped []Skip            `json:"scrollback_skipped,omitempty"`
+	ForegroundSkipped []Skip            `json:"foreground_skipped,omitempty"`
 }
 
-// ScrollbackSkip records a shell block whose scrollback was deliberately not
+// Skip records a shell block whose scrollback was deliberately not
 // saved, and why; its layout, cwd, and receipt are unaffected.
-type ScrollbackSkip struct {
+type Skip struct {
 	BlockID SourceID `json:"block_source_id"`
 	Reason  string   `json:"reason"`
 }
@@ -194,6 +227,14 @@ func (s Snapshot) Inventory() (map[SourceID]string, error) {
 						}
 						if err := ref.Validate(); err != nil {
 							return fmt.Errorf("invalid scrollback reference for block %s: %w", b.ID, err)
+						}
+					}
+					if b.Foreground != "" {
+						if s.Version < 5 {
+							return fmt.Errorf("foreground commands require snapshot version 5")
+						}
+						if err := ValidForeground(b.Foreground); err != nil {
+							return fmt.Errorf("invalid foreground command for block %s: %w", b.ID, err)
 						}
 					}
 					if !filepath.IsAbs(b.CWD) || len(b.CWD) > 4096 || len(b.Label) > 4096 {
@@ -305,9 +346,11 @@ func normalize(s Snapshot, translate func(SourceID) SourceID) (Snapshot, error) 
 		if n.Block != nil {
 			b := *n.Block
 			b.ID = translate(b.ID)
-			// Receipts and scrollback are replay metadata, not observable Rex topology.
+			// Receipts, scrollback, and foreground commands are replay
+			// metadata, not observable Rex topology.
 			b.AgentResume = nil
 			b.Scrollback = nil
+			b.Foreground = ""
 			var err error
 			b.CWD, err = CanonicalCWD(b.CWD)
 			return Node{Block: &b}, err

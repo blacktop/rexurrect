@@ -8,7 +8,9 @@ including tabs, splits, and working directories. The optional agent plugin also
 resumes registered Claude Code and Codex conversations.
 
 The project is experimental. Terminals without an agent receipt come back as
-ordinary shells. Arbitrary running commands and scrollback aren't restored.
+ordinary shells. With the optional shell hook, the command a pane was running
+is typed back at its prompt (never run); with `--scrollback`, its earlier
+output is replayed above the prompt.
 
 ## Install
 
@@ -66,6 +68,16 @@ programs are skipped. Turn it on for the automatic job with
 `rexurrect agent install --scrollback` (same `--server` and `--state-dir` as
 before), or run `rexurrect save --scrollback` yourself; see
 [Encrypted scrollback](docs/compatibility.md#encrypted-scrollback-s4).
+
+## Running commands
+
+Source `plugins/rexurrect/shell/foreground.zsh` from `~/.zshrc` or
+`plugins/rexurrect/shell/foreground.fish` from `~/.config/fish/config.fish`.
+While a command runs in a pane, the hook records the line you typed; when it
+exits, the record goes away. After a restart, a pane that was running
+something comes back with that line typed at its prompt, ready for Enter and
+never run on its own. Agent panes still resume through their receipts. See
+[Foreground commands](docs/compatibility.md#foreground-commands-s5).
 
 ## Usage
 
