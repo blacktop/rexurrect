@@ -2,18 +2,19 @@
 package snapshot
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
+	"unicode"
+	"unicode/utf8"
 
-	"errors"
 	"github.com/blacktop/rexurrect/internal/receipt"
 	"github.com/blacktop/rexurrect/internal/scrollback"
-	"strings"
-	"unicode/utf8"
 )
 
 // Version 2 added agent receipts; version 3 added their host and command form;
@@ -67,8 +68,9 @@ type Block struct {
 }
 
 // ValidForeground accepts one trimmed line of printable UTF-8 of at most
-// MaxForeground bytes. A control character could execute or corrupt the typed
-// text, so none is allowed, including the newline that would run it.
+// MaxForeground bytes. A control, format, or other non-printable code point
+// could execute or corrupt the typed text, so none is allowed, including the
+// newline that would run it.
 func ValidForeground(command string) error {
 	if command == "" || len(command) > MaxForeground {
 		return fmt.Errorf("foreground command must be 1 to %d bytes", MaxForeground)
@@ -80,8 +82,8 @@ func ValidForeground(command string) error {
 		return errors.New("foreground command has leading or trailing whitespace")
 	}
 	for _, r := range command {
-		if r < 0x20 || r == 0x7f {
-			return errors.New("foreground command contains a control character")
+		if !unicode.IsPrint(r) {
+			return errors.New("foreground command contains a non-printable character")
 		}
 	}
 	return nil
@@ -136,8 +138,9 @@ type Report struct {
 	ForegroundSkipped []Skip            `json:"foreground_skipped,omitempty"`
 }
 
-// Skip records a shell block whose scrollback was deliberately not
-// saved, and why; its layout, cwd, and receipt are unaffected.
+// Skip records a shell block that an optional feature (scrollback, foreground
+// command) deliberately left out, and why; its layout, cwd, and receipt are
+// unaffected.
 type Skip struct {
 	BlockID SourceID `json:"block_source_id"`
 	Reason  string   `json:"reason"`
@@ -383,4 +386,14 @@ func normalize(s Snapshot, translate func(SourceID) SourceID) (Snapshot, error) 
 		out.Sessions = append(out.Sessions, copy)
 	}
 	return out, nil
+}
+
+// Blocks returns every shell block of every session, in order. As with
+// Session.Blocks, the pointers alias the snapshot.
+func (s Snapshot) Blocks() []*Block {
+	var blocks []*Block
+	for _, session := range s.Sessions {
+		blocks = append(blocks, session.Blocks()...)
+	}
+	return blocks
 }

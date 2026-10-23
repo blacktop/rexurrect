@@ -32,6 +32,7 @@ type AutoResult struct {
 	PrunedReceipts           []snapshot.SourceID        `json:"pruned_receipts,omitempty"`
 	CaptureCWDSubstitutions  []snapshot.CWDSubstitution `json:"capture_cwd_substitutions,omitempty"`
 	CaptureScrollbackSkipped []snapshot.Skip            `json:"capture_scrollback_skipped,omitempty"`
+	CaptureForegroundSkipped []snapshot.Skip            `json:"capture_foreground_skipped,omitempty"`
 }
 
 // AutoCycle holds the same nonblocking lock as manual save and restore for its
@@ -127,6 +128,7 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 	out.PrunedReceipts = saved.Report.PrunedReceipts
 	out.CaptureCWDSubstitutions = saved.Report.CWDSubstitutions
 	out.CaptureScrollbackSkipped = saved.Report.ScrollbackSkipped
+	out.CaptureForegroundSkipped = saved.Report.ForegroundSkipped
 	if saved.Generation == 0 {
 		out.Reason = "unchanged"
 	}

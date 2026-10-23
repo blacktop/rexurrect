@@ -71,8 +71,8 @@ before), or run `rexurrect save --scrollback` yourself; see
 
 ## Running commands
 
-Source `plugins/rexurrect/shell/foreground.zsh` from `~/.zshrc` or
-`plugins/rexurrect/shell/foreground.fish` from `~/.config/fish/config.fish`.
+Add `eval "$(rexurrect hook zsh)"` to `~/.zshrc`, or
+`rexurrect hook fish | source` to `~/.config/fish/config.fish`.
 While a command runs in a pane, the hook records the line you typed; when it
 exits, the record goes away. After a restart, a pane that was running
 something comes back with that line typed at its prompt, ready for Enter and

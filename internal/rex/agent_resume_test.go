@@ -153,7 +153,7 @@ func TestAgentInitialInputOptions(t *testing.T) {
 	for _, harness := range []string{"claude", "claude-ddb", "codex", "codex-team", "claude-team", "unknown"} {
 		r := agentReceipt(1, harness)
 		var leaves []snapshot.SourceID
-		n := layout(snapshot.Node{Block: &snapshot.Block{ID: snapshot.SourceID(r.BlockID), CWD: "/", AgentResume: &r}}, &leaves, nil)
+		n := layout(snapshot.Node{Block: &snapshot.Block{ID: snapshot.SourceID(r.BlockID), CWD: "/", AgentResume: &r}}, &leaves, startCommands{})
 		data, err := json.Marshal(n.Block.Options)
 		if err != nil {
 			t.Fatal(err)

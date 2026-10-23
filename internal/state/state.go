@@ -24,6 +24,9 @@ import (
 const (
 	FormatVersion = 1
 	MaxFileSize   = 16 << 20
+	// tempPrefix names the temporary file a write creates beside its
+	// destination; the shell hooks use the same prefix, and pruning keys on it.
+	tempPrefix = ".tmp-"
 )
 
 var (
@@ -252,6 +255,16 @@ func privateDirectory(path, name string) error {
 		return fmt.Errorf("%s must be a private directory (mode 0700)", name)
 	}
 	return nil
+}
+
+// optionalPrivateDir resolves the state subdirectory name: absent is not an
+// error, present must be a private real directory.
+func (s *Store) optionalPrivateDir(name string) (string, bool, error) {
+	path := filepath.Join(s.dir, name)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return path, false, nil
+	}
+	return path, true, privateDirectory(path, name)
 }
 
 // subdirectory creates the nested directory named by parts under the state
@@ -489,7 +502,7 @@ func (s *Store) write(name string, value any) error {
 // where it lives before the caller's next side effect.
 func publishFile(target, name string, data []byte) error {
 	dir := filepath.Dir(target)
-	f, err := os.CreateTemp(dir, ".tmp-*")
+	f, err := os.CreateTemp(dir, tempPrefix+"*")
 	if err != nil {
 		return err
 	}

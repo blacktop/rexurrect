@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/blacktop/rexurrect/internal/autolog"
+	"github.com/blacktop/rexurrect/internal/foreground"
 	"github.com/blacktop/rexurrect/internal/rex"
 	"github.com/blacktop/rexurrect/internal/rexbin"
 	"github.com/blacktop/rexurrect/internal/snapshot"
@@ -62,7 +63,7 @@ func main() {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(stdout, "Usage: rexurrect <save|restore|status|auto> --server unix://PATH --state-dir DIR [options]\n       rexurrect agent <install|enable|disable|uninstall|status> [options]\n       rexurrect receipt <set|clear|list> --server unix://PATH --state-dir DIR [options]\n       rexurrect scrollback replay --state-dir DIR --key-id ID --object-id ID --host ID --block ID\n       rexurrect version")
+		_, err := fmt.Fprintln(stdout, "Usage: rexurrect <save|restore|status|auto> --server unix://PATH --state-dir DIR [options]\n       rexurrect agent <install|enable|disable|uninstall|status> [options]\n       rexurrect receipt <set|clear|list> --server unix://PATH --state-dir DIR [options]\n       rexurrect scrollback replay --state-dir DIR --key-id ID --object-id ID --host ID --block ID\n       rexurrect hook <zsh|fish>\n       rexurrect version")
 		if len(args) == 0 {
 			return errors.New("a command is required")
 		}
@@ -84,6 +85,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	if command == "scrollback" {
 		return runScrollback(ctx, args[1:], stdout, stderr)
+	}
+	if command == "hook" {
+		if len(args) != 2 {
+			return errors.New("usage: rexurrect hook <zsh|fish>")
+		}
+		script, err := foreground.Script(args[1])
+		if err != nil {
+			return err
+		}
+		_, err = stdout.Write(script)
+		return err
 	}
 	if command != "save" && command != "status" && command != "restore" && command != "auto" {
 		return fmt.Errorf("unknown command %q", command)

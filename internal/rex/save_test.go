@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blacktop/rexurrect/internal/keychain/keychaintest"
 	"github.com/blacktop/rexurrect/internal/snapshot"
@@ -199,6 +200,8 @@ func TestSaveScrollbackGuardsBeforeCapturePrivateServer(t *testing.T) {
 	if err := errors.Join(publishErr, store.Close()); err != nil {
 		t.Fatal(err)
 	}
+	// A stale foreground record is pruned only by an accepted save.
+	writeForeground(t, dir, "block:ffffffff-89ab-4cde-8fab-0123456789ab", "vim", 2*time.Minute)
 	before := savedFiles(t, dir)
 	if _, exists := before["receipts.json"]; exists {
 		t.Fatal("fixture must have no receipt store")

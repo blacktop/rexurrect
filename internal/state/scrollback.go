@@ -210,11 +210,8 @@ func (s *Store) PinScrollback(e Envelope) error {
 // mid-publish. Every directory it deletes from must be a private real
 // directory, never a symlink.
 func (s *Store) PruneScrollback(retained Current) error {
-	root := filepath.Join(s.dir, scrollbackDir)
-	if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err := privateDirectory(root, scrollbackDir); err != nil {
+	root, ok, err := s.optionalPrivateDir(scrollbackDir)
+	if err != nil || !ok {
 		return err
 	}
 	referenced := retainedScrollback(retained)
@@ -226,7 +223,7 @@ func (s *Store) PruneScrollback(retained Current) error {
 		return err
 	}
 	for _, key := range keys {
-		if key.Type().IsRegular() && strings.HasPrefix(key.Name(), ".tmp-") {
+		if key.Type().IsRegular() && strings.HasPrefix(key.Name(), tempPrefix) {
 			if err := os.Remove(filepath.Join(root, key.Name())); err != nil {
 				return err
 			}
@@ -259,11 +256,8 @@ func retainedScrollback(retained Current) map[string]bool {
 // pinnedScrollback adds the sidecars that unexpired pins protect and removes
 // expired or malformed pins.
 func (s *Store) pinnedScrollback(referenced map[string]bool) error {
-	dir := filepath.Join(s.dir, scrollbackDir, scrollbackPinsDir)
-	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err := privateDirectory(dir, filepath.Join(scrollbackDir, scrollbackPinsDir)); err != nil {
+	dir, ok, err := s.optionalPrivateDir(filepath.Join(scrollbackDir, scrollbackPinsDir))
+	if err != nil || !ok {
 		return err
 	}
 	pins, err := os.ReadDir(dir)

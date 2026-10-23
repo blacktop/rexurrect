@@ -140,10 +140,11 @@ default.
 
 ## Record running commands
 
-Independently of the agent hooks, `shell/foreground.zsh` (source from
-`~/.zshrc`) or `shell/foreground.fish` (source from `config.fish`) records the
-command a pane is running so a restart brings it back typed at the prompt,
-never executed. It needs no plugin trust and no Rex call; see
+Independently of the agent hooks, the binary's own recorder (`eval
+"$(rexurrect hook zsh)"` in `~/.zshrc`, or `rexurrect hook fish | source` in
+`config.fish`) records the command a pane is running so a restart brings it
+back typed at the prompt, never executed. It needs no plugin trust and no Rex
+call; see
 [Foreground commands](../../docs/compatibility.md#foreground-commands-s5).
 
 ## Check the result

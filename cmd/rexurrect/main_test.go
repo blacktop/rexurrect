@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blacktop/rexurrect/internal/foreground"
 	"github.com/blacktop/rexurrect/internal/keychain/keychaintest"
 	"github.com/blacktop/rexurrect/internal/rex"
 	"github.com/blacktop/rexurrect/internal/snapshot"
@@ -197,5 +198,26 @@ esac
 	}
 	if items, err := os.ReadDir(fake.Items); err != nil || len(items) != 1 {
 		t.Fatalf("restore did not provision through the substituted security tool: %v %v", items, err)
+	}
+}
+
+// The hook command prints the embedded recorder for a supported shell, so a
+// cask-installed binary needs no checkout.
+func TestHookCommand(t *testing.T) {
+	for _, shell := range []string{"zsh", "fish"} {
+		var out, diagnostic bytes.Buffer
+		if err := run(t.Context(), []string{"hook", shell}, &out, &diagnostic); err != nil {
+			t.Fatalf("hook %s: %v", shell, err)
+		}
+		want, err := foreground.Script(shell)
+		if err != nil || !bytes.Equal(out.Bytes(), want) || !bytes.Contains(out.Bytes(), []byte("RR_FOREGROUND")) {
+			t.Fatalf("hook %s output differs from the embedded script: %v", shell, err)
+		}
+	}
+	for _, args := range [][]string{{"hook"}, {"hook", "bash"}, {"hook", "zsh", "extra"}} {
+		var out, diagnostic bytes.Buffer
+		if err := run(t.Context(), args, &out, &diagnostic); err == nil || out.Len() != 0 {
+			t.Errorf("accepted %q", args)
+		}
 	}
 }

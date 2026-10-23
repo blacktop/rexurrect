@@ -828,18 +828,20 @@ tool for that test only.
 ## Foreground commands (S5)
 
 A restored pane gets the command it was running when it was saved typed at
-its new prompt, never executed, once the shell hook is installed:
-[`foreground.zsh`](../plugins/rexurrect/shell/foreground.zsh) sourced from
-`~/.zshrc`, or [`foreground.fish`](../plugins/rexurrect/shell/foreground.fish)
-sourced from `~/.config/fish/config.fish`. bash has no native `preexec` and is
-not supported. Nothing is inferred from processes: without the hook no pane
+its new prompt, never executed, once the shell hook is installed. The hooks
+ship inside the binary: add `eval "$(rexurrect hook zsh)"` to `~/.zshrc`, or
+`rexurrect hook fish | source` to `~/.config/fish/config.fish` (sources:
+[`internal/foreground`](../internal/foreground)). bash has no native
+`preexec` and is not supported. Nothing is inferred from processes: without the hook no pane
 has a record, and `ps` is never consulted.
 
 Recording: the hook's `preexec` writes the command line as typed to
 `<state-dir>/foreground/<block-uuid>` (a private temporary file renamed into
 place, under `umask 077`, with no lock, no Rex call, and no subprocess), and
 `precmd`/`fish_postexec` removes it, so a record exists only while a
-foreground command is running. That is exactly what a restart interrupts; a
+foreground command is running. The zsh hook uses zsh's file builtins so no
+command waits on a fork; fish creates the directory once and pays one
+external `mv` and `rm` per command. That is exactly what a restart interrupts; a
 command that finished is never typed back, so no ignore list exists. The hook
 installs only in the outermost shell of a pane (`REX_BLOCK` set,
 `RR_FOREGROUND` unset, then exported), so agent tool shells, `su`, and
@@ -848,20 +850,26 @@ space is not recorded.
 
 Capture, per shell block: the record is read with the same private-file
 rules as every state file (0600, no symlinks, directory 0700), trimmed, and
-must be one line of printable UTF-8 of at most 1024 bytes (no control
-characters, which includes the newline that would run it). A usable record
+must be one line of printable UTF-8 of at most 1024 bytes: no control,
+format, or other non-printable code point (Unicode `IsPrint`), which includes
+the newline that would run it. A usable record
 becomes `block.foreground`; an unusable one is reported in
 `report.foreground_skipped` (`save` prints `Block …: foreground not recorded
 (…)`, `auto --json` carries the list), and a records directory that is not
-private skips every block. Records of blocks that no longer exist and stale
+private skips every block and is left untouched. Records of blocks that no longer exist and stale
 temporary files are deleted after a one-minute grace, so a pane created
-during a capture keeps its record.
+during a capture keeps its record, and only once the generation is published
+(or an unchanged automatic cycle confirms it): a save refused by the host or
+empty-snapshot guards deletes nothing. `auto --json` carries
+`capture_foreground_skipped`. The record is part of the snapshot, so a
+pane that starts or finishes a command between automatic cycles publishes a
+new generation.
 
 Restore: a block with an agent receipt types the receipt's resume command
 (and runs it) as before; otherwise a block with a foreground command gets it
-as `initial_input` without a trailing newline. Such a block starts through
-the same clearing login chain as a scrollback replay (without the decryptor
-when it has no sidecar to replay), because the terminal echoes typed initial
+as `initial_input` without a trailing newline. Any block with initial input
+that does not replay scrollback starts through the same clearing login chain
+as a replay, without the decryptor, because the terminal echoes typed initial
 input before any process can take it and the clear removes that stray copy.
 The command sits at the prompt after any replayed scrollback and the login
 banner, ready for Enter or Ctrl-C.

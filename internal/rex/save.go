@@ -147,8 +147,13 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 	if err != nil {
 		return state.Envelope{}, err
 	}
-	if err := attachForeground(store, &captured); err != nil {
-		return state.Envelope{}, err
+	live, pruneForeground := attachForeground(store, &captured)
+	prune := func(retained state.Current) error {
+		err := store.PruneScrollback(retained)
+		if pruneForeground {
+			err = errors.Join(err, store.PruneForeground(live))
+		}
+		return err
 	}
 	// The automatic cycle passes the Current it already loaded and is the only
 	// caller that suppresses an unchanged publication; a manual save loads it
@@ -185,8 +190,8 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 					return state.Envelope{}, err
 				}
 			}
-			if err := store.PruneScrollback(*current); err != nil {
-				return state.Envelope{}, fmt.Errorf("pruning scrollback failed: %w", err)
+			if err := prune(*current); err != nil {
+				return state.Envelope{}, fmt.Errorf("pruning failed: %w", err)
 			}
 			return captured, nil // Generation zero means no publication.
 		}
@@ -200,8 +205,10 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 		if previous := current.Envelope; previous.Generation != 0 {
 			retained.LastKnownGood = &previous
 		}
-		if pruneErr := store.PruneScrollback(retained); pruneErr != nil {
-			err = fmt.Errorf("generation %d was published, but pruning scrollback failed: %w", saved.Generation, pruneErr)
+		// Stale records are pruned only now, after the guards inside Publish
+		// accepted this capture; a refused save deletes nothing.
+		if pruneErr := prune(retained); pruneErr != nil {
+			err = fmt.Errorf("generation %d was published, but pruning failed: %w", saved.Generation, pruneErr)
 		}
 	}
 	return saved, err

@@ -102,13 +102,12 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	// the sessions this invocation creates take part: completed and in-flight
 	// sessions keep their earlier decision and are neither re-pinned nor
 	// reported again.
-	var replay map[snapshot.SourceID]replayCommand
+	starts := startCommands{typed: typedStart()}
 	if creating := creatingSessions(e, latest); len(creating.Snapshot.Sessions) != 0 {
-		replay, scrollbackSkipped, err = c.scrollbackReplay(ctx, store, creating)
+		starts.replay, scrollbackSkipped, err = c.scrollbackReplay(ctx, store, creating)
 		if err != nil {
 			return out, err
 		}
-		replay = typedStarts(creating, replay)
 	}
 	for _, session := range e.Snapshot.Sessions {
 		r := latest[session.ID]
@@ -135,7 +134,7 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 			if err := c.checkInstance(ctx, target); err != nil {
 				return out, err
 			}
-			created, createErr := c.createSession(ctx, session, r.Marker, replay)
+			created, createErr := c.createSession(ctx, session, r.Marker, starts)
 			if createErr != nil {
 				recordErr := store.Record(e, &j, session.ID, r.Marker, "uncertain", nil)
 				return out, errors.Join(fmt.Errorf("session.create outcome is uncertain; restore again to read back marker %s: %w", r.Marker, createErr), recordErr)

@@ -14,12 +14,11 @@ func TestValidForeground(t *testing.T) {
 	for name, bad := range map[string]string{
 		"empty":     "",
 		"oversized": strings.Repeat("x", MaxForeground+1),
-		"newline":   "ls\n",
-		"tab":       "ls\tla",
-		"escape":    "ls \x1b[2J",
+		"multiline": "cat <<EOF\nhello",
 		"delete":    "ls\x7f",
+		"c1":        "ls\u009b",
+		"bidi":      "ls\u202e",
 		"leading":   " ls",
-		"trailing":  "ls ",
 		"invalid":   "ls \xff",
 	} {
 		if err := ValidForeground(bad); err == nil {
@@ -29,9 +28,8 @@ func TestValidForeground(t *testing.T) {
 }
 
 func TestForegroundRequiresVersion5(t *testing.T) {
-	block := SourceID("block:01234567-89ab-4cde-8fab-0123456789ab")
-	s := Snapshot{Version: Version, Sessions: []Session{{ID: "session:01234567-89ab-4cde-8fab-0123456789ab", ActiveWindow: "window",
-		Windows: []Window{{ID: "window", LayerID: "layer", Focus: block, Layout: Node{Block: &Block{ID: block, CWD: "/", Foreground: "vim"}}}}}}}
+	s := scrollbackFixture(nil)
+	s.Sessions[0].Windows[0].Layout.Block.Foreground = "vim"
 	if _, err := s.Inventory(); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +39,7 @@ func TestForegroundRequiresVersion5(t *testing.T) {
 	}
 	s.Version = Version
 	s.Sessions[0].Windows[0].Layout.Block.Foreground = "ls \x1b[2J"
-	if _, err := s.Inventory(); err == nil || !strings.Contains(err.Error(), "control character") {
+	if _, err := s.Inventory(); err == nil || !strings.Contains(err.Error(), "non-printable") {
 		t.Fatalf("control character accepted: %v", err)
 	}
 }

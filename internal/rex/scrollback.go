@@ -40,7 +40,7 @@ const clearScreen = `printf "\033[H\033[2J\033[3J"; `
 const replayScript = clearScreen + `"$2" scrollback replay --state-dir "$3" --key-id "$4" --object-id "$5" --host "$6" --block "$7" 2>/dev/null; printf "\033[0m"; ` + loginChain
 
 // typedScript starts the login chain on a clean screen for a block whose
-// foreground command is typed back without a scrollback replay.
+// initial input is typed without a scrollback replay.
 const typedScript = clearScreen + loginChain
 
 var rexErrorCode = regexp.MustCompile(`\(status=\d+ code=([a-z_]+)\)`)
@@ -89,7 +89,7 @@ type scrollbackSealer struct {
 // read, or sidecar problem is a per-block skip. An empty server provisions
 // nothing: the key and its state record exist only once a block needs them.
 func (c Client) captureScrollback(ctx context.Context, store *state.Store, e *state.Envelope) error {
-	if !hasBlocks(e.Snapshot) {
+	if len(e.Snapshot.Blocks()) == 0 {
 		return nil
 	}
 	sealer := &scrollbackSealer{store: store, hostID: e.HostID, budget: maxScrollbackPerGeneration}
@@ -99,11 +99,7 @@ func (c Client) captureScrollback(ctx context.Context, store *state.Store, e *st
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		for _, session := range e.Snapshot.Sessions {
-			for _, b := range session.Blocks() {
-				e.Report.ScrollbackSkipped = append(e.Report.ScrollbackSkipped, snapshot.Skip{BlockID: b.ID, Reason: skipReason(keyErr)})
-			}
-		}
+		e.Report.ScrollbackSkipped = append(e.Report.ScrollbackSkipped, skipBlocks(e.Snapshot.Blocks(), skipReason(keyErr))...)
 		return nil
 	}
 	for si := range e.Snapshot.Sessions {
@@ -123,13 +119,13 @@ func (c Client) captureScrollback(ctx context.Context, store *state.Store, e *st
 	return nil
 }
 
-func hasBlocks(s snapshot.Snapshot) bool {
-	for _, session := range s.Sessions {
-		if len(session.Blocks()) != 0 {
-			return true
-		}
+// skipBlocks reports every block in blocks as skipped for one reason.
+func skipBlocks(blocks []*snapshot.Block, reason string) []snapshot.Skip {
+	skips := make([]snapshot.Skip, 0, len(blocks))
+	for _, b := range blocks {
+		skips = append(skips, snapshot.Skip{BlockID: b.ID, Reason: reason})
 	}
-	return false
+	return skips
 }
 
 // captureBlock reads, seals, and publishes one block's scrollback. A nonempty
@@ -253,11 +249,9 @@ type replayCommand []string
 // cannot be written, every replay becomes a skip and the restore continues.
 func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, e state.Envelope) (map[snapshot.SourceID]replayCommand, []snapshot.Skip, error) {
 	var referenced []*snapshot.Block
-	for _, session := range e.Snapshot.Sessions {
-		for _, b := range session.Blocks() {
-			if b.Scrollback != nil {
-				referenced = append(referenced, b)
-			}
+	for _, b := range e.Snapshot.Blocks() {
+		if b.Scrollback != nil {
+			referenced = append(referenced, b)
 		}
 	}
 	if len(referenced) == 0 {
@@ -265,10 +259,7 @@ func (c Client) scrollbackReplay(ctx context.Context, store *state.Store, e stat
 	}
 	var skips []snapshot.Skip
 	skipAll := func(reason string) (map[snapshot.SourceID]replayCommand, []snapshot.Skip, error) {
-		for _, b := range referenced {
-			skips = append(skips, snapshot.Skip{BlockID: b.ID, Reason: reason})
-		}
-		return nil, skips, nil
+		return nil, append(skips, skipBlocks(referenced, reason)...), nil
 	}
 	stateID, _, master, err := store.ScrollbackKey(ctx, c.keychainStore())
 	if err != nil {
@@ -343,30 +334,15 @@ func currentUsername() (string, bool) {
 	return me.Username, true
 }
 
-// typedStarts gives every block whose foreground command will be typed, and
-// which has no replay command already, a start command that clears the
-// screen before Rex's login chain. The terminal echoes typed initial input
-// before any process can take it, and without the clear that stray copy
-// would sit above the login banner. A block with an agent receipt keeps
-// Rex's default start, as before.
-func typedStarts(e state.Envelope, commands map[snapshot.SourceID]replayCommand) map[snapshot.SourceID]replayCommand {
+// typedStart is the start command for a block whose initial input is typed
+// without a scrollback replay: the screen is cleared before Rex's login chain,
+// because the terminal echoes typed initial input before any process can take
+// it and the clear removes that stray copy. Nil when the user is unknown, so
+// Rex's default start is used.
+func typedStart() replayCommand {
 	username, ok := currentUsername()
 	if !ok {
-		return commands
+		return nil
 	}
-	for _, session := range e.Snapshot.Sessions {
-		for _, b := range session.Blocks() {
-			if b.Foreground == "" || b.AgentResume != nil {
-				continue
-			}
-			if _, ok := commands[b.ID]; ok {
-				continue
-			}
-			if commands == nil {
-				commands = make(map[snapshot.SourceID]replayCommand)
-			}
-			commands[b.ID] = replayCommand{"/bin/bash", "--noprofile", "--norc", "-c", typedScript, "rexurrect", username}
-		}
-	}
-	return commands
+	return replayCommand{"/bin/bash", "--noprofile", "--norc", "-c", typedScript, "rexurrect", username}
 }

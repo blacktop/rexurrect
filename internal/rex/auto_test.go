@@ -66,6 +66,23 @@ func TestAutoUnchangedPrivateServer(t *testing.T) {
 	if err != nil || manual.Generation != 4 {
 		t.Fatalf("unchanged manual save: %+v %v", manual, err)
 	}
+	// An automatic save reports the foreground records it could not attach.
+	writeForeground(t, dir, snapshot.SourceID(created.Windows[0].Blocks[0]), strings.Repeat("x", snapshot.MaxForeground+1), 0)
+	out, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout)
+	if err != nil || out.SavedGeneration != 5 || len(out.CaptureForegroundSkipped) != 1 || !strings.Contains(out.CaptureForegroundSkipped[0].Reason, "1024 bytes") {
+		t.Fatalf("automatic foreground skips: %+v %v", out, err)
+	}
+	// A records directory that is not private degrades the cycle, never fails
+	// it: every block is reported and the directory is left alone.
+	if err := os.Chmod(filepath.Join(dir, "foreground"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, generation := range []uint64{6, 0} {
+		out, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout)
+		if err != nil || out.SavedGeneration != generation || len(out.CaptureForegroundSkipped) != 1 || !strings.Contains(out.CaptureForegroundSkipped[0].Reason, "private directory") {
+			t.Fatalf("shared records directory: %+v %v", out, err)
+		}
+	}
 }
 
 func TestAutoCyclePrivateServer(t *testing.T) {
@@ -290,7 +307,7 @@ func TestAutoCyclePrivateServerRecovery(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "saved")
 			saved, marker := prepareIntent(t, s.client, dir, e)
 			first, second := saved.Snapshot.Sessions[0], saved.Snapshot.Sessions[1]
-			created, err := s.client.createSession(t.Context(), first, marker, nil)
+			created, err := s.client.createSession(t.Context(), first, marker, startCommands{})
 			if err != nil {
 				t.Fatal(err)
 			}
