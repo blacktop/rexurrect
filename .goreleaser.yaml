@@ -51,5 +51,8 @@ homebrew_casks:
         end
       end
     caveats: |
-      To build and install the per-user LaunchAgent, run `just install`
-      from a checkout of https://github.com/blacktop/rexurrect.
+      Install the per-user LaunchAgent (add --scrollback to replay pane output):
+        rexurrect agent install --server "unix://$HOME/Library/Application Support/rex/server.sock" --state-dir "$HOME/Library/Application Support/rexurrect"
+      To bring back the command a pane was running, add to your shell config:
+        eval "$(rexurrect hook zsh)"        # ~/.zshrc
+        rexurrect hook fish | source       # ~/.config/fish/config.fish
