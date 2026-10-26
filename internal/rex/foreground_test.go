@@ -242,6 +242,9 @@ func TestForegroundRoundTripPrivateServer(t *testing.T) {
 	if err != nil || result.Outcome != "complete" {
 		t.Fatalf("restore: %+v %v", result, err)
 	}
+	if result.Recovery != (snapshot.Recovery{Agents: 1, Typed: 1}) {
+		t.Fatalf("restore recovery counts: %+v", result.Recovery)
+	}
 	session := result.IDMap[saved.Snapshot.Sessions[0].ID]
 	newRunning, newAgent := result.IDMap[snapshot.SourceID(running)], result.IDMap[snapshot.SourceID(agent)]
 	waitBlockText(t, c, session, newRunning, typed)

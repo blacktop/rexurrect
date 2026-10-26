@@ -397,3 +397,45 @@ func (s Snapshot) Blocks() []*Block {
 	}
 	return blocks
 }
+
+// InitialInput is what a restore types into b: the receipt's resume command,
+// which runs, else the recorded foreground command, typed and never run. A
+// receipt decides even when it produces no input.
+func (b Block) InitialInput() string {
+	if b.AgentResume != nil {
+		return b.AgentResume.InitialInput()
+	}
+	return b.Foreground
+}
+
+// Recovery counts what a restore of s does with each shell block.
+type Recovery struct {
+	// Agents are blocks whose receipt produces a resume command that runs.
+	Agents int `json:"agents"`
+	// Typed are blocks whose recorded foreground command is typed, never run.
+	Typed int `json:"typed"`
+	// Plain are shells that get no input.
+	Plain int `json:"plain"`
+	// Inert are blocks whose receipt produces no input by policy, such as a
+	// legacy harness that never resumes.
+	Inert int `json:"inert"`
+}
+
+// Recovery classifies every shell block of s.
+func (s Snapshot) Recovery() Recovery {
+	var r Recovery
+	for _, b := range s.Blocks() {
+		input := b.InitialInput()
+		switch {
+		case b.AgentResume != nil && input != "":
+			r.Agents++
+		case b.AgentResume != nil:
+			r.Inert++
+		case input != "":
+			r.Typed++
+		default:
+			r.Plain++
+		}
+	}
+	return r
+}

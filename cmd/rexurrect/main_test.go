@@ -100,7 +100,7 @@ func TestStatusJSON(t *testing.T) {
 	if err := os.WriteFile(binary, []byte(`#!/bin/sh
 case "$6:$8" in
   whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"new-instance","rex_version":"version"}' ;;
-  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit","api_min_revision":3,"api_revision":7}' ;;
   api:session.list) printf '%s\n' '{"sessions":[]}' ;;
   *) exit 1 ;;
 esac
@@ -123,6 +123,12 @@ esac
 	var status rex.Status
 	if err := json.Unmarshal(out.Bytes(), &status); err != nil || status.Generation != 1 || status.HostID != "host" || status.InstanceID != "saved-instance" || strings.TrimSpace(diagnostic.String()) != "" {
 		t.Fatalf("JSON status: %s %v", out.String(), err)
+	}
+	if status.RexAPI != (rex.RexAPI{ServerAPIMinRevision: 3, ServerAPIRevision: 7}) || status.Recovery != (snapshot.Recovery{}) {
+		t.Fatalf("JSON status recovery fields: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"rex_api":{"server_api_min_revision":3,"server_api_revision":7}`) {
+		t.Fatalf("JSON status rex_api shape: %s", out.String())
 	}
 	s, err = state.Open(dir)
 	if err != nil {
@@ -154,7 +160,8 @@ esac
 		t.Fatalf("missing-session JSON status: %s %v", out.String(), err)
 	}
 	out.Reset()
-	if err := run(t.Context(), base, &out, &diagnostic); err != nil || !strings.Contains(out.String(), "Journal complete_missing") || !strings.Contains(out.String(), "Missing completed session missing-live-session\n") {
+	if err := run(t.Context(), base, &out, &diagnostic); err != nil || !strings.Contains(out.String(), "Journal complete_missing") || !strings.Contains(out.String(), "Missing completed session missing-live-session\n") ||
+		!strings.Contains(out.String(), "Recovery: 0 agents resume, 0 commands typed, 0 plain shells, 0 inert receipts\nRex API revision 7 (minimum 3)\n") {
 		t.Fatalf("missing-session text status: %s %v", out.String(), err)
 	}
 }
@@ -219,5 +226,38 @@ func TestHookCommand(t *testing.T) {
 		if err := run(t.Context(), args, &out, &diagnostic); err == nil || out.Len() != 0 {
 			t.Errorf("accepted %q", args)
 		}
+	}
+}
+
+// A server from before the API range fields existed leaves both out, which
+// reports as 0 and 0 rather than failing.
+func TestStatusRexAPIOmitted(t *testing.T) {
+	root := t.TempDir()
+	dir, binary := filepath.Join(root, "state"), filepath.Join(root, "rex")
+	if err := os.WriteFile(binary, []byte(`#!/bin/sh
+case "$6:$8" in
+  whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"new-instance","rex_version":"version"}' ;;
+  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  *) exit 1 ;;
+esac
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, publishErr := s.Publish(state.Envelope{CapturedAt: time.Now().UTC(), RexVersion: "version", Commit: "commit", HostID: "host", InstanceID: "saved-instance", Snapshot: snapshot.Snapshot{Version: snapshot.Version}, Report: &snapshot.Report{}}, true)
+	if err := errors.Join(publishErr, s.Close()); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"status", "--server", "unix:///private/tmp/unused", "--state-dir", dir, "--rex", binary}
+	var out, diagnostic bytes.Buffer
+	if err := run(t.Context(), append(base, "--json"), &out, &diagnostic); err != nil || !strings.Contains(out.String(), `"rex_api":{"server_api_min_revision":0,"server_api_revision":0}`) {
+		t.Fatalf("omitted range JSON: %s %v", out.String(), err)
+	}
+	out.Reset()
+	if err := run(t.Context(), base, &out, &diagnostic); err != nil || !strings.Contains(out.String(), "Rex API revision 0 (minimum 0)\n") {
+		t.Fatalf("omitted range text: %s %v", out.String(), err)
 	}
 }

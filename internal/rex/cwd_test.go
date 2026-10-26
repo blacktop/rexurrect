@@ -335,11 +335,11 @@ func TestRestoreMissingCWDReported(t *testing.T) {
 	}
 	before := savedFiles(t, dir)
 	again, err := c.RestoreSaved(t.Context(), dir, e.Generation)
-	if err != nil || !reflect.DeepEqual(again, result) || !reflect.DeepEqual(savedFiles(t, dir), before) {
+	if err != nil || !sameRestore(again, result) || !reflect.DeepEqual(savedFiles(t, dir), before) {
 		t.Fatalf("completed substitution changed: %+v %v", again, err)
 	}
 	status, err := c.Status(t.Context(), dir)
-	if err != nil || !reflect.DeepEqual(status.Journal, result) {
+	if err != nil || !sameRestore(status.Journal, result) {
 		t.Fatalf("substitution missing from status: %+v %v", status, err)
 	}
 	auto, err := c.AutoCycle(t.Context(), dir, DefaultAutoWait, DefaultAutoTimeout)

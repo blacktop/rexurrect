@@ -234,7 +234,7 @@ esac
 	}
 	// Reproduce the durable intermediate state: publication succeeded, but
 	// the following receipt-file update did not run.
-	e, err := c.stableCapture(t.Context())
+	e, _, err := c.stableCapture(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +515,7 @@ end
 	}
 	before, files := readMarker(), savedFiles(t, dir)
 	again, err := s.client.RestoreSaved(t.Context(), dir, saved.Generation)
-	if err != nil || !reflect.DeepEqual(again, result) || !reflect.DeepEqual(before, readMarker()) || !reflect.DeepEqual(files, savedFiles(t, dir)) {
+	if err != nil || !sameRestore(again, result) || !reflect.DeepEqual(before, readMarker()) || !reflect.DeepEqual(files, savedFiles(t, dir)) {
 		t.Fatalf("second restore changed state: %+v %v", again, err)
 	}
 	var finished []string
@@ -535,7 +535,7 @@ end
 		}
 	}
 	beforeFiles := savedFiles(t, dir)
-	if again, err := s.client.RestoreSaved(t.Context(), dir, saved.Generation); err != nil || !reflect.DeepEqual(again, result) || !reflect.DeepEqual(beforeFiles, savedFiles(t, dir)) || !reflect.DeepEqual(before, readMarker()) {
+	if again, err := s.client.RestoreSaved(t.Context(), dir, saved.Generation); err != nil || !sameRestore(again, result) || !reflect.DeepEqual(beforeFiles, savedFiles(t, dir)) || !reflect.DeepEqual(before, readMarker()) {
 		t.Fatalf("completed restore re-registered an exited agent: %+v %v", again, err)
 	}
 	t.Logf("resumed and cleared two custom-command conversations; legacy claude-team and future-agent received no input; compared %d ID mappings", len(result.IDMap))

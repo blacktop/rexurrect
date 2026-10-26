@@ -338,19 +338,13 @@ func (s startCommands) command(id snapshot.SourceID, input string) (replayComman
 	return nil, false
 }
 
-// layout builds the create request. A receipt's resume command runs; a
-// recorded foreground command is typed at the prompt, never run, so no
-// newline follows it; a receipt takes precedence.
+// layout builds the create request; Block.InitialInput decides what each
+// block gets typed.
 func layout(n snapshot.Node, leaves *[]snapshot.SourceID, starts startCommands) createNode {
 	if n.Block != nil {
 		b := n.Block
 		*leaves = append(*leaves, b.ID)
-		options := shellOptions{CWD: b.CWD}
-		if b.AgentResume != nil {
-			options.InitialInput = b.AgentResume.InitialInput()
-		} else if b.Foreground != "" {
-			options.InitialInput = b.Foreground
-		}
+		options := shellOptions{CWD: b.CWD, InitialInput: b.InitialInput()}
 		if command, ok := starts.command(b.ID, options.InitialInput); ok {
 			login := false
 			options.Shell, options.Login, options.Command = "none", &login, command

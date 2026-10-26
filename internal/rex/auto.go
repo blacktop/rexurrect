@@ -23,7 +23,9 @@ type AutoResult struct {
 	Generation               uint64                     `json:"generation"`
 	HostID                   string                     `json:"host_id"`
 	InstanceID               string                     `json:"instance_id"`
+	RexAPI                   RexAPI                     `json:"rex_api,omitzero"`
 	RestoreOutcome           string                     `json:"restore_outcome"`
+	Restored                 snapshot.Recovery          `json:"restored,omitzero"`
 	SavedGeneration          uint64                     `json:"saved_generation,omitempty"`
 	Reason                   string                     `json:"reason,omitempty"`
 	CWDSubstitutions         []state.CWDSubstitution    `json:"cwd_substitutions,omitempty"`
@@ -108,6 +110,7 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 			out.CWDSubstitutions = restored.CWDSubstitutions
 			out.NotResumed = restored.NotResumed
 			out.ScrollbackSkipped = restored.ScrollbackSkipped
+			out.Restored = restored.Recovery
 			if restored.Outcome != "" {
 				out.RestoreOutcome = restored.Outcome
 			}
@@ -120,7 +123,10 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 			out.State = "new_instance"
 		}
 	}
-	saved, err := c.save(ctx, store, false, &target, &current)
+	saved, captured, err := c.save(ctx, store, false, &target, &current)
+	// The capture read the server identity; its advertised API range is
+	// reported even when publication then failed.
+	out.RexAPI = captured.API
 	if err != nil {
 		return out, err
 	}

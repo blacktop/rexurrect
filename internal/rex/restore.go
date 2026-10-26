@@ -49,11 +49,13 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	}
 	out = j.Status(e)
 	var scrollbackSkipped []snapshot.Skip
+	var recovery snapshot.Recovery
 	defer func() {
 		acknowledged := out.IDMap
 		out = j.Status(e)
 		maps.Copy(out.IDMap, acknowledged)
 		out.ScrollbackSkipped = scrollbackSkipped
+		out.Recovery = recovery
 	}()
 
 	latest := j.Latest()
@@ -104,6 +106,7 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	// reported again.
 	starts := startCommands{typed: typedStart()}
 	if creating := creatingSessions(e, latest); len(creating.Snapshot.Sessions) != 0 {
+		recovery = creating.Snapshot.Recovery()
 		starts.replay, scrollbackSkipped, err = c.scrollbackReplay(ctx, store, creating)
 		if err != nil {
 			return out, err

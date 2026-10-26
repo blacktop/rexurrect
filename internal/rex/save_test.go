@@ -183,7 +183,7 @@ func TestSaveScrollbackGuardsBeforeCapturePrivateServer(t *testing.T) {
 		Layout: createNode{Block: &createBlock{Flavor: shellFlavor,
 			Options: shellOptions{Shell: "/bin/sh", Login: new(bool), CWD: s.root}}},
 	}}}, nil)
-	captured, err := s.client.stableCapture(t.Context())
+	captured, _, err := s.client.stableCapture(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

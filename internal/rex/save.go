@@ -20,6 +20,15 @@ type serverIdentity struct {
 	Commit     string `json:"commit"`
 	HostID     string `json:"host_id"`
 	InstanceID string `json:"instance_id"`
+	API        RexAPI `json:"rex_api"`
+}
+
+// RexAPI is the API revision range a server advertises in server.version.
+// Rex leaves either field out when it is 0, and servers from before the
+// fields existed leave both out, so 0 means "not advertised".
+type RexAPI struct {
+	ServerAPIMinRevision int `json:"server_api_min_revision"`
+	ServerAPIRevision    int `json:"server_api_revision"`
 }
 
 func (c Client) whoami(ctx context.Context) (serverIdentity, error) {
@@ -45,8 +54,10 @@ func (c Client) identity(ctx context.Context) (serverIdentity, error) {
 		return id, err
 	}
 	var version struct {
-		RexVersion string `json:"rex_version"`
-		Commit     string `json:"commit"`
+		RexVersion     string `json:"rex_version"`
+		Commit         string `json:"commit"`
+		APIMinRevision int    `json:"api_min_revision"`
+		APIRevision    int    `json:"api_revision"`
 	}
 	if err := c.Call(ctx, "server.version", map[string]any{}, &version); err != nil {
 		return id, err
@@ -55,7 +66,8 @@ func (c Client) identity(ctx context.Context) (serverIdentity, error) {
 		return id, errors.New("the Rex server version changed during identity read")
 	}
 	id.Commit = version.Commit
-	if id.Commit == "" || len(id.Commit) > 256 {
+	id.API = RexAPI{ServerAPIMinRevision: version.APIMinRevision, ServerAPIRevision: version.APIRevision}
+	if id.Commit == "" || len(id.Commit) > 256 || id.API.ServerAPIMinRevision < 0 || id.API.ServerAPIRevision < 0 {
 		return id, errors.New("invalid Rex server identity")
 	}
 	return id, nil
@@ -96,26 +108,26 @@ func (c Client) boundary(ctx context.Context) (captureBoundary, error) {
 	return b, nil
 }
 
-func (c Client) stableCapture(ctx context.Context) (state.Envelope, error) {
+func (c Client) stableCapture(ctx context.Context) (state.Envelope, serverIdentity, error) {
 	for range captureAttempts {
 		before, err := c.boundary(ctx)
 		if err != nil {
-			return state.Envelope{}, fmt.Errorf("before capture: %w", err)
+			return state.Envelope{}, serverIdentity{}, fmt.Errorf("before capture: %w", err)
 		}
 		saved, report, captureErr := c.Capture(ctx, before.sessions)
 		after, err := c.boundary(ctx)
 		if err != nil {
-			return state.Envelope{}, fmt.Errorf("after capture: %w", err)
+			return state.Envelope{}, serverIdentity{}, fmt.Errorf("after capture: %w", err)
 		}
 		if before.identity != after.identity || !slices.Equal(before.sessions, after.sessions) || !slices.Equal(before.revisions, after.revisions) {
 			continue
 		}
 		if captureErr != nil {
-			return state.Envelope{}, captureErr
+			return state.Envelope{}, serverIdentity{}, captureErr
 		}
-		return state.Envelope{CapturedAt: time.Now().UTC(), RexVersion: before.identity.RexVersion, Commit: before.identity.Commit, HostID: before.identity.HostID, InstanceID: before.identity.InstanceID, Snapshot: saved, Report: &report}, nil
+		return state.Envelope{CapturedAt: time.Now().UTC(), RexVersion: before.identity.RexVersion, Commit: before.identity.Commit, HostID: before.identity.HostID, InstanceID: before.identity.InstanceID, Snapshot: saved, Report: &report}, before.identity, nil
 	}
-	return state.Envelope{}, fmt.Errorf("unstable Rex capture after %d attempts: server identity, session set, or structural revision changed", captureAttempts)
+	return state.Envelope{}, serverIdentity{}, fmt.Errorf("unstable Rex capture after %d attempts: server identity, session set, or structural revision changed", captureAttempts)
 }
 
 // Save captures every live session without mutating Rex. The state lock covers
@@ -128,24 +140,25 @@ func (c Client) Save(ctx context.Context, dir string, allowEmpty bool) (saved st
 		return saved, err
 	}
 	defer func() { err = errors.Join(err, store.Close()) }()
-	return c.save(ctx, store, allowEmpty, nil, nil)
+	saved, _, err = c.save(ctx, store, allowEmpty, nil, nil)
+	return saved, err
 }
 
 // expected binds an automatic save to the instance whose recovery was checked.
-func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, expected *serverIdentity, current *state.Current) (state.Envelope, error) {
-	captured, err := c.stableCapture(ctx)
+func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, expected *serverIdentity, current *state.Current) (state.Envelope, serverIdentity, error) {
+	captured, id, err := c.stableCapture(ctx)
 	if err != nil {
-		return state.Envelope{}, err
+		return state.Envelope{}, id, err
 	}
 	if expected != nil && (captured.HostID != expected.HostID || captured.InstanceID != expected.InstanceID) {
-		return state.Envelope{}, errors.New("the Rex server instance changed during automatic cycle")
+		return state.Envelope{}, id, errors.New("the Rex server instance changed during automatic cycle")
 	}
 	if err := ctx.Err(); err != nil {
-		return state.Envelope{}, err
+		return state.Envelope{}, id, err
 	}
 	kept, err := attachReceipts(store, &captured)
 	if err != nil {
-		return state.Envelope{}, err
+		return state.Envelope{}, id, err
 	}
 	live, pruneForeground := attachForeground(store, &captured)
 	prune := func(retained state.Current) error {
@@ -162,7 +175,7 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 	if !automatic {
 		loaded, err := store.LoadCurrent()
 		if err != nil && !errors.Is(err, state.ErrNoCurrent) {
-			return state.Envelope{}, err
+			return state.Envelope{}, id, err
 		}
 		current = &loaded
 	}
@@ -170,10 +183,10 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 		// The publication guards run first so a refused save leaves no
 		// sidecar, state record, or keychain item behind.
 		if err := state.PublishGuards(*current, captured, allowEmpty); err != nil {
-			return state.Envelope{}, err
+			return state.Envelope{}, id, err
 		}
 		if err := c.captureScrollback(ctx, store, &captured); err != nil {
-			return state.Envelope{}, err
+			return state.Envelope{}, id, err
 		}
 	}
 	if automatic {
@@ -187,13 +200,13 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 			// finishing those steps.
 			if len(captured.Report.PrunedReceipts) != 0 {
 				if err := store.WriteReceipts(captured.HostID, kept); err != nil {
-					return state.Envelope{}, err
+					return state.Envelope{}, id, err
 				}
 			}
 			if err := prune(*current); err != nil {
-				return state.Envelope{}, fmt.Errorf("pruning failed: %w", err)
+				return state.Envelope{}, id, fmt.Errorf("pruning failed: %w", err)
 			}
-			return captured, nil // Generation zero means no publication.
+			return captured, id, nil // Generation zero means no publication.
 		}
 	}
 	saved, err := store.Publish(captured, allowEmpty)
@@ -211,7 +224,7 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 			err = fmt.Errorf("generation %d was published, but pruning failed: %w", saved.Generation, pruneErr)
 		}
 	}
-	return saved, err
+	return saved, id, err
 }
 
 type Status struct {
@@ -223,10 +236,12 @@ type Status struct {
 	Commit        string              `json:"commit"`
 	HostID        string              `json:"host_id"`
 	InstanceID    string              `json:"instance_id"`
+	RexAPI        RexAPI              `json:"rex_api"`
 	Sessions      int                 `json:"sessions"`
 	Windows       int                 `json:"windows"`
 	Blocks        int                 `json:"blocks"`
 	Unsupported   int                 `json:"unsupported"`
+	Recovery      snapshot.Recovery   `json:"recovery"`
 	Journal       state.JournalStatus `json:"journal"`
 }
 
@@ -248,7 +263,13 @@ func (c Client) Status(ctx context.Context, dir string) (out Status, err error) 
 	if err != nil {
 		return out, err
 	}
-	return c.status(ctx, store, current, id)
+	out, err = c.status(ctx, store, current, id)
+	if err == nil {
+		// Classified here rather than in status, which the automatic cycle
+		// calls every minute without reporting counts.
+		out.Recovery = current.Envelope.Snapshot.Recovery()
+	}
+	return out, err
 }
 
 func (c Client) status(ctx context.Context, store *state.Store, current state.Current, id serverIdentity) (out Status, err error) {
@@ -256,7 +277,7 @@ func (c Client) status(ctx context.Context, store *state.Store, current state.Cu
 	if id.HostID != e.HostID {
 		return out, errors.New("state belongs to a different Rex host")
 	}
-	out = Status{Server: "unix://" + c.Socket, Generation: e.Generation, CapturedAt: e.CapturedAt, RexVersion: e.RexVersion, Commit: e.Commit, HostID: e.HostID, InstanceID: e.InstanceID, Unsupported: len(e.Report.Unsupported)}
+	out = Status{Server: "unix://" + c.Socket, Generation: e.Generation, CapturedAt: e.CapturedAt, RexVersion: e.RexVersion, Commit: e.Commit, HostID: e.HostID, InstanceID: e.InstanceID, RexAPI: id.API, Unsupported: len(e.Report.Unsupported)}
 	if current.LastKnownGood != nil {
 		out.LastKnownGood = current.LastKnownGood.Generation
 	}

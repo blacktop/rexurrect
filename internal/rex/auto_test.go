@@ -139,6 +139,11 @@ func TestAutoCyclePrivateServer(t *testing.T) {
 	if restarted.InstanceID == first.InstanceID || restarted.HostID != first.HostID || restarted.RestoreOutcome != "complete" {
 		t.Fatalf("restart decision: %+v", restarted)
 	}
+	// Plain shells only: the summary says so, and the server's API revision
+	// is reported on every cycle.
+	if restarted.Restored.Plain == 0 || restarted.Restored.Agents+restarted.Restored.Typed+restarted.Restored.Inert != 0 || restarted.RexAPI.ServerAPIRevision == 0 || first.Restored != (snapshot.Recovery{}) {
+		t.Fatalf("restore summary: %+v first %+v", restarted.Restored, first.Restored)
+	}
 	j := journalFor(t, s.client, dir, e)
 	if j.Status(e).Outcome != "complete" {
 		t.Fatalf("restore was not completed: %+v", j)

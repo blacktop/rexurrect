@@ -345,6 +345,22 @@ round-tripping, last-known-good, status counts, and the empty-server guard.
 Focused tests cover invalid and oversized state, leftover files, exclusive
 locking, and transient/persistent structural revision changes.
 
+### Recovery reporting
+
+`status` classifies every shell block of the current generation the way a
+restore would treat it and reports the counts as `recovery`: `agents` (a
+receipt whose resume command runs), `typed` (a recorded foreground command
+typed at the prompt, never run), `plain` (no input), and `inert` (a receipt
+that produces no input by policy, such as a legacy `claude-team`). A receipt
+decides the class even when a foreground command was also recorded. The text
+form prints `Recovery: N agents resume, N commands typed, N plain shells, N
+inert receipts`. `status` also reports `rex_api`, the API revision range the
+reachable server advertises in `server.version`: `server_api_min_revision`
+and `server_api_revision`. Rex leaves either field out when it is 0, and
+servers from before the fields existed leave both out, so 0 means the server
+did not advertise it. The text form prints `Rex API revision N (minimum M)`.
+No supported revision is compiled in and no comparison is made.
+
 ## Journaled restore (S1b)
 
 The restore CLI uses the same explicit endpoint, state directory, Rex executable,
@@ -503,6 +519,12 @@ the saved generation and unchanged automatic result.
 default-terminal panes before its first run, checks publication of generation
 1, checks same-instance JSON and exit status, and checks a nonzero unavailable
 outcome.
+
+The automatic result also carries `rex_api` once the capture has read the
+server identity and, when a restore ran, `restored`: the same four counts for the sessions that
+invocation created (a resumed restore counts only the sessions it creates).
+The stderr line includes both, so a `complete` restore that resumed nothing
+reads as such. `restore --json` carries the same counts as `recovery`.
 
 ## Opt-in agent receipts (S3a)
 
@@ -1072,8 +1094,10 @@ supported tiled tree fails capture. Save checks structural stability around
 Capture; the underlying S0 Capture remains non-atomic. Remote hosts, alternate
 block flavors, shell selection,
 environment, pane ownership, client/app selection, layer bounds/stacking, and
-terminal contents are not preserved. Other Rex versions and platforms remain
-untested.
+terminal modes and alternate-screen state are not preserved. Other Rex versions
+and platforms remain untested.
 
-Arbitrary command replay and scrollback remain outside this slice. Agent
-resumption is limited to the validated, opt-in receipt commands above.
+Optional [encrypted scrollback](#encrypted-scrollback-s4) replays captured
+primary-screen output, and [foreground recording](#foreground-commands-s5)
+restores the recorded command at the prompt without executing it. Automatic
+agent resumption is limited to the validated, opt-in receipt commands above.
