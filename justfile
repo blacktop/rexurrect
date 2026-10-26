@@ -13,19 +13,20 @@ build:
     mkdir -p ./bin
     go build -o ./bin/rexurrect ./cmd/rexurrect
 
-# Run formatting, vet, and the full private-server test suite.
+# Run formatting, vet, and the full private-server test suite, uncached: the
+# tests exec the installed rex binary, which Go's test cache does not track.
 check:
     test -z "$(gofmt -l cmd internal)"
     go vet ./...
-    go test -p 1 ./...
-    go test ./internal/... -run TestIsolatedRoundTrip -v
-    go test ./internal/... -run TestSaveStatusPrivateServer -v
-    go test ./internal/... -run TestRestoreRecoveryPrivateServer -v
-    go test ./internal/... -run TestAutoCyclePrivateServer -v
-    go test ./cmd/... -run TestAutoBinaryPrivateServer -v
-    go test ./internal/... -run TestLaunchAgentLifecycle -v
-    go test ./internal/rex -run TestDefaultTerminalRoundTrip -v
-    go test ./internal/rex -run TestAgentResumeRoundTrip -v
+    go test -count=1 -p 1 ./...
+    go test -count=1 ./internal/... -run TestIsolatedRoundTrip -v
+    go test -count=1 ./internal/... -run TestSaveStatusPrivateServer -v
+    go test -count=1 ./internal/... -run TestRestoreRecoveryPrivateServer -v
+    go test -count=1 ./internal/... -run TestAutoCyclePrivateServer -v
+    go test -count=1 ./cmd/... -run TestAutoBinaryPrivateServer -v
+    go test -count=1 ./internal/... -run TestLaunchAgentLifecycle -v
+    go test -count=1 ./internal/rex -run TestDefaultTerminalRoundTrip -v
+    go test -count=1 ./internal/rex -run TestAgentResumeRoundTrip -v
 
 # Resolve the configured Rex CLI during installation; preserve it in the plist.
 install *args:
