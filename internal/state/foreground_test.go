@@ -31,6 +31,13 @@ func TestForegroundRecords(t *testing.T) {
 	if err != nil || len(failed) != 0 || len(records) != 1 || records[live] != "slack-tooy chat" {
 		t.Fatalf("valid record: %v %v %v", records, failed, err)
 	}
+	// A block ID that is not a UUID never reaches the filesystem, so it can
+	// neither read outside the records directory nor be reported.
+	writeFile(t, filepath.Dir(s.dir), "outside", []byte("vim"))
+	records, failed, err = s.ForegroundRecords([]snapshot.SourceID{"block:../outside", "block:../../outside", live})
+	if err != nil || len(failed) != 0 || len(records) != 1 || records[live] != "slack-tooy chat" {
+		t.Fatalf("traversal: %v %v %v", records, failed, err)
+	}
 	path := filepath.Join(dir, liveBlockUUID)
 	for name, tc := range map[string]struct {
 		content string

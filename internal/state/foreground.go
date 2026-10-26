@@ -32,10 +32,12 @@ func (s *Store) ForegroundRecords(blocks []snapshot.SourceID) (records map[snaps
 	}
 	records, failed = make(map[snapshot.SourceID]string), make(map[snapshot.SourceID]error)
 	for _, id := range blocks {
-		uuid, ok := strings.CutPrefix(string(id), "block:")
-		if !ok {
+		// Only a well-formed block ID names a record; nothing else may become
+		// part of a path under the records directory.
+		if !receipt.ValidBlockID(string(id)) {
 			continue
 		}
+		uuid := strings.TrimPrefix(string(id), "block:")
 		data, err := readBounded(filepath.Join(dir, uuid), filepath.Join(foregroundDir, uuid), maxForegroundRecord)
 		if errors.Is(err, os.ErrNotExist) {
 			continue

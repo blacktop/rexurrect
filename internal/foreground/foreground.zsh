@@ -40,4 +40,6 @@ if [[ ${REX_BLOCK-} == block:* && -z ${RR_FOREGROUND+set} ]] &&
 	autoload -Uz add-zsh-hook
 	add-zsh-hook preexec _rr_foreground_preexec
 	add-zsh-hook precmd _rr_foreground_precmd
+	# A normal exit runs preexec for the exit command but no precmd after it.
+	add-zsh-hook zshexit _rr_foreground_precmd
 fi

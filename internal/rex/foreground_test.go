@@ -131,14 +131,21 @@ func hookScript(t *testing.T, shell string) string {
 }
 
 // The shell hooks write the record privately while a command runs, drop it
-// when the command finishes, ignore leading-space commands, and install only
-// in the outermost shell of a pane.
+// when the command finishes and when the shell exits, ignore leading-space
+// commands, install only in the outermost shell of a pane, and are unaffected
+// by user functions named after the file utilities.
 func TestForegroundHooks(t *testing.T) {
 	for _, tc := range []struct {
-		shell, record, clear, installed string
+		shell, record, clear, present, installed, wrappers string
 	}{
-		{"zsh", `_rr_foreground_preexec 'slack-tooy chat'`, "_rr_foreground_precmd", "whence -w _rr_foreground_preexec >/dev/null"},
-		{"fish", `emit fish_preexec 'slack-tooy chat'`, `emit fish_postexec ''`, "functions -q _rr_foreground_preexec"},
+		{"zsh", `_rr_foreground_preexec 'slack-tooy chat'`, "_rr_foreground_precmd",
+			`test -e "$_rr_foreground_file" && echo present || echo cleared`,
+			"whence -w _rr_foreground_preexec >/dev/null",
+			`rm() { echo WRAPPED; return 1; }; mv() { echo WRAPPED; return 1; }; mkdir() { echo WRAPPED; return 1; }; `},
+		{"fish", `emit fish_preexec 'slack-tooy chat'`, `emit fish_postexec ''`,
+			`test -e "$_rr_foreground_file"; and echo present; or echo cleared`,
+			"functions -q _rr_foreground_preexec",
+			`function rm; echo WRAPPED; return 1; end; function mv; echo WRAPPED; return 1; end; function mkdir; echo WRAPPED; return 1; end; `},
 	} {
 		t.Run(tc.shell, func(t *testing.T) {
 			shell, err := exec.LookPath(tc.shell)
@@ -154,35 +161,30 @@ func TestForegroundHooks(t *testing.T) {
 				cmd := exec.CommandContext(t.Context(), shell, "-c", script)
 				cmd.Env = append(slices.Clone(env), extra...)
 				out, err := cmd.CombinedOutput()
-				return string(out), err
+				return strings.TrimSpace(string(out)), err
 			}
-			if out, err := run(source + tc.record); err != nil {
-				t.Fatalf("record: %v\n%s", err, out)
+			lines := func(out string) []string {
+				var trimmed []string
+				for _, line := range strings.Split(out, "\n") {
+					trimmed = append(trimmed, strings.TrimSpace(line))
+				}
+				return trimmed
 			}
-			data, err := os.ReadFile(record)
-			if err != nil || string(data) != "slack-tooy chat" {
-				t.Fatalf("record content %q: %v", data, err)
-			}
-			if info, _ := os.Stat(record); info.Mode().Perm() != 0600 {
-				t.Fatalf("record mode %v", info.Mode())
-			}
-			if info, _ := os.Stat(filepath.Dir(record)); info.Mode().Perm() != 0700 {
-				t.Fatalf("records directory mode %v", info.Mode())
-			}
-			if entries, _ := os.ReadDir(filepath.Dir(record)); len(entries) != 1 {
-				t.Fatalf("temporary file left behind: %v", entries)
-			}
-			if out, err := run(source + tc.clear); err != nil {
-				t.Fatalf("clear: %v\n%s", err, out)
+			// While the command runs: the record holds the typed line, the
+			// file and directory are private, and no temporary file remains.
+			inspect := `; cat "$_rr_foreground_file"; echo; stat -f %Lp "$_rr_foreground_file" "$_rr_foreground_dir"; ls -A1 "$_rr_foreground_dir" | wc -l`
+			out, err := run(tc.wrappers + source + tc.record + inspect)
+			if err != nil || !slices.Equal(lines(out), []string{"slack-tooy chat", "600", "700", "1"}) {
+				t.Fatalf("record under wrappers: %v\n%s", err, out)
 			}
 			if _, err := os.Lstat(record); !os.IsNotExist(err) {
-				t.Fatal("record survived the command finishing")
+				t.Fatal("record survived the shell exiting")
 			}
-			if out, err := run(source + strings.Replace(tc.record, "'slack-tooy chat'", "' ls'", 1)); err != nil {
+			if out, err := run(tc.wrappers + source + tc.record + "; " + tc.clear + "; " + tc.present); err != nil || out != "cleared" {
+				t.Fatalf("finished command under wrappers: %v\n%s", err, out)
+			}
+			if out, err := run(source + strings.Replace(tc.record, "'slack-tooy chat'", "' ls'", 1) + "; " + tc.present); err != nil || out != "cleared" {
 				t.Fatalf("leading space: %v\n%s", err, out)
-			}
-			if _, err := os.Lstat(record); !os.IsNotExist(err) {
-				t.Fatal("leading-space command was recorded")
 			}
 			if out, err := run(source+tc.installed, "RR_FOREGROUND="+block); err == nil {
 				t.Fatalf("hook installed in a nested shell:\n%s", out)
@@ -190,12 +192,9 @@ func TestForegroundHooks(t *testing.T) {
 			if tc.shell == "zsh" {
 				// A temporary file the hook cannot open for writing must never
 				// be renamed into place as the record.
-				stale := `print -n stale > "$_rr_foreground_dir/.tmp-` + strings.TrimPrefix(block, "block:") + `.$$"; chmod 000 "$_rr_foreground_dir"/.tmp-*; ` + tc.record
-				if out, err := run(source + stale); err != nil {
+				stale := `print -n stale > "$_rr_foreground_dir/.tmp-` + strings.TrimPrefix(block, "block:") + `.$$"; chmod 000 "$_rr_foreground_dir"/.tmp-*; ` + tc.record + "; " + tc.present
+				if out, err := run(source + stale); err != nil || out != "cleared" {
 					t.Fatalf("stale temporary file: %v\n%s", err, out)
-				}
-				if _, err := os.Lstat(record); !os.IsNotExist(err) {
-					t.Fatal("a failed write published a record")
 				}
 			}
 		})

@@ -838,18 +838,19 @@ has a record, and `ps` is never consulted.
 Recording: the hook's `preexec` writes the command line as typed to
 `<state-dir>/foreground/<block-uuid>` (a private temporary file renamed into
 place, under `umask 077`, with no lock, no Rex call, and no subprocess), and
-`precmd`/`fish_postexec` removes it, so a record exists only while a
-foreground command is running. The zsh hook uses zsh's file builtins so no
+`precmd`/`fish_postexec` removes it, as does the shell's exit hook, so a
+record exists only while a foreground command is running. The zsh hook uses zsh's file builtins so no
 command waits on a fork; fish creates the directory once and pays one
-external `mv` and `rm` per command. That is exactly what a restart interrupts; a
+external `mv` and `rm` per command, called through `command` so user
+functions of those names never take part. That is exactly what a restart interrupts; a
 command that finished is never typed back, so no ignore list exists. The hook
 installs only in the outermost shell of a pane (`REX_BLOCK` set,
 `RR_FOREGROUND` unset, then exported), so agent tool shells, `su`, and
 `nix-shell` inherit the marker and stay silent. A command typed with a leading
 space is not recorded.
 
-Capture, per shell block: the record is read with the same private-file
-rules as every state file (0600, no symlinks, directory 0700), trimmed, and
+Capture, per shell block: only a well-formed block ID (`block:<uuid>`) names a
+record; the record is read with the same private-file rules as every state file (0600, no symlinks, directory 0700), trimmed, and
 must be one line of printable UTF-8 of at most 1024 bytes: no control,
 format, or other non-printable code point (Unicode `IsPrint`), which includes
 the newline that would run it. A usable record
