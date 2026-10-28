@@ -14,6 +14,7 @@ import (
 	"github.com/blacktop/rexurrect/internal/autolog"
 	"github.com/blacktop/rexurrect/internal/launchagent"
 	"github.com/blacktop/rexurrect/internal/rex"
+	"github.com/blacktop/rexurrect/internal/rexbin"
 )
 
 // Auto already emitted its result and diagnostic through the bounded writers.
@@ -23,16 +24,18 @@ func (e *reportedAutoError) Unwrap() error { return e.error }
 
 func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(stdout, "Usage: rexurrect agent <install|enable|disable|uninstall|status> [options]")
+		_, err := fmt.Fprintln(stdout, "Usage: rexurrect agent <install|enable|disable|uninstall|status|wake> [options]")
 		if len(args) == 0 {
 			return errors.New("an agent command is required")
 		}
 		return err
 	}
 	command := args[0]
-	if command != "install" && command != "enable" && command != "disable" && command != "uninstall" && command != "status" {
+	if command != "install" && command != "enable" && command != "disable" && command != "uninstall" && command != "status" && command != "wake" {
 		return fmt.Errorf("unknown agent command %q", command)
 	}
+	// Captured before anything else: a parent that is already gone reads as 1.
+	parent := os.Getppid()
 	flags := flag.NewFlagSet("agent "+command, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	var c launchagent.Config
@@ -60,6 +63,9 @@ func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	a, err := launchagent.New(c.Label, *plistDir)
 	if err != nil {
 		return err
+	}
+	if command == "wake" {
+		return runWake(ctx, a, parent, *jsonOutput, stdout)
 	}
 	var status launchagent.Status
 	switch command {
@@ -96,5 +102,36 @@ func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return json.NewEncoder(stdout).Encode(status)
 	}
 	_, err = fmt.Fprintf(stdout, "%s/%s: installed=%t loaded=%t changed=%t\nPlist: %s\n", status.Domain, status.Label, status.Installed, status.Loaded, status.Changed, status.PlistPath)
+	return err
+}
+
+// runWake is the init.lua startup trigger: it kicks the owned job only when
+// the process that started this one is the configured Rex server. Skips exit
+// zero because the ordinary timer and WatchPaths cycles still run.
+func runWake(ctx context.Context, a *launchagent.Agent, parent int, jsonOutput bool, stdout io.Writer) error {
+	parentAlive := func() bool { return os.Getppid() == parent }
+	result, err := a.Wake(ctx, parent, parentAlive, func(ctx context.Context, c launchagent.Config) (int, error) {
+		binary, _, err := rexbin.Resolve(c.Rex)
+		if err != nil {
+			return 0, err
+		}
+		socket, err := rex.SocketPath(c.Server)
+		if err != nil {
+			return 0, err
+		}
+		client := rex.Client{Binary: binary, Socket: socket, CallTimeout: c.CallTimeout}
+		return client.AwaitServer(ctx, c.Wait, parentAlive)
+	})
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return json.NewEncoder(stdout).Encode(result)
+	}
+	detail := result.Reason
+	if detail == "" {
+		detail = fmt.Sprintf("started by Rex server PID %d", result.ServerPID)
+	}
+	_, err = fmt.Fprintf(stdout, "%s/%s: %s (%s)\n", result.Domain, result.Label, result.Outcome, detail)
 	return err
 }

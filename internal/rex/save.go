@@ -20,6 +20,7 @@ type serverIdentity struct {
 	Commit     string `json:"commit"`
 	HostID     string `json:"host_id"`
 	InstanceID string `json:"instance_id"`
+	PID        int    `json:"pid"`
 	API        RexAPI `json:"rex_api"`
 }
 

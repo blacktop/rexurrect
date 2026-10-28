@@ -79,6 +79,18 @@ something comes back with that line typed at its prompt, ready for Enter and
 never run on its own. Agent panes still resume through their receipts. See
 [Foreground commands](docs/compatibility.md#foreground-commands-s5).
 
+## Waking the job when Rex starts
+
+The job already responds when the Rex socket appears or disappears. To wake
+it from Rex's own startup as well, add the output of `rexurrect hook lua` to
+`~/.config/rex/init.lua`. When Rex loads that file it starts
+`rexurrect agent wake` detached; wake kicks the installed job only after
+confirming that the process which started it is the configured Rex server, so
+`rex config check` or running it from a shell does nothing. Reloading the
+configured server can wake a harmless same-instance cycle.
+A disabled or uninstalled job is left alone. Remove the lines to turn it off.
+See [Startup trigger](docs/compatibility.md#startup-trigger-initlua).
+
 ## Usage
 
 The automatic job handles routine recovery. Use `rexurrect status` to inspect

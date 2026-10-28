@@ -113,31 +113,8 @@ func TestLaunchAgentLifecycle(t *testing.T) {
 		t.Fatalf("generation %d was not published: %v\nstdout: %s\nstderr: %s", want, last, out, diagnostic)
 		return state.Current{}
 	}
-	printJob := func() string {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, "/bin/launchctl", "print", target).CombinedOutput()
-		if err != nil {
-			t.Fatalf("launchctl print: %v\n%s", err, out)
-		}
-		return string(out)
-	}
-	runs := func(job string) int {
-		t.Helper()
-		for line := range strings.SplitSeq(job, "\n") {
-			key, value, ok := strings.Cut(line, "=")
-			if ok && strings.TrimSpace(key) == "runs" {
-				n, err := strconv.Atoi(strings.TrimSpace(value))
-				if err != nil {
-					t.Fatal(err)
-				}
-				return n
-			}
-		}
-		t.Fatalf("launchctl print has no run count: %s", job)
-		return 0
-	}
+	printJob := func() string { return launchdPrint(t, target) }
+	runs := func(job string) int { return launchdRuns(t, job) }
 	waitIdle := func() int {
 		t.Helper()
 		deadline := time.Now().Add(generationWait)

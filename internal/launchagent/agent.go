@@ -79,50 +79,77 @@ func runLaunchctl(ctx context.Context, args ...string) ([]byte, error) {
 	return output.buf.Bytes(), nil
 }
 
+// absentService reports whether launchctl failed only because the label is
+// not registered. Domain, permission, timeout, and other errors must not
+// masquerade as an unregistered job.
+func absentService(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 113
+}
+
 func (a *Agent) loaded(ctx context.Context) (bool, error) {
 	_, err := a.launchctl(ctx, "print", a.target())
 	if err == nil {
 		return true, nil
 	}
-	// launchctl returns 113 for an absent service. Domain, permission,
-	// timeout, and other errors must not masquerade as an unregistered job.
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 113 {
+	if absentService(err) {
 		return false, nil
 	}
 	return false, err
 }
 
-func (a *Agent) readOwned() (owned []byte, err error) {
+// kickstart runs the loaded job now. launchd runs one instance per label, so a
+// cycle already in progress is left alone rather than restarted.
+func (a *Agent) kickstart(ctx context.Context) (bool, error) {
+	_, err := a.launchctl(ctx, "kickstart", a.target())
+	if err == nil {
+		return true, nil
+	}
+	if absentService(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (a *Agent) readOwned() (owned []byte, values map[string]plistValue, err error) {
 	f, err := os.OpenFile(a.PlistPath, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { err = errors.Join(err, f.Close()) }()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || info.Size() > maxPlistSize {
-		return nil, errors.New("LaunchAgent plist must be a bounded regular file without group or world writes")
+		return nil, nil, errors.New("LaunchAgent plist must be a bounded regular file without group or world writes")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxPlistSize+1))
 	if err != nil || len(data) > maxPlistSize {
-		return nil, errors.Join(err, errors.New("cannot read bounded LaunchAgent plist"))
+		return nil, nil, errors.Join(err, errors.New("cannot read bounded LaunchAgent plist"))
 	}
-	values, err := parsePlist(data)
+	values, err = parsePlist(data)
 	if err != nil {
-		return nil, fmt.Errorf("read LaunchAgent plist: %w", err)
+		return nil, nil, fmt.Errorf("read LaunchAgent plist: %w", err)
 	}
 	if values["Label"].XMLName.Local != "string" || values["Label"].Text != a.Label || values["RexResurrectManaged"].Text != "1" {
-		return nil, errors.New("refusing to change a plist not owned by rexurrect with this label")
+		return nil, nil, errors.New("refusing to change a plist not owned by rexurrect with this label")
 	}
-	return data, nil
+	return data, values, nil
+}
+
+// OwnedConfig returns the settings recorded in the owned plist.
+func (a *Agent) OwnedConfig() (Config, error) {
+	_, values, err := a.readOwned()
+	if err != nil {
+		return Config{}, err
+	}
+	return parseConfig(values)
 }
 
 func (a *Agent) Status(ctx context.Context) (Status, error) {
 	s := Status{Label: a.Label, Domain: a.Domain, PlistPath: a.PlistPath}
-	_, err := a.readOwned()
+	_, _, err := a.readOwned()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return s, err
 	}
@@ -171,7 +198,7 @@ func (a *Agent) Install(ctx context.Context, c Config) (Status, error) {
 	if err := executable(resolved); err != nil {
 		return Status{}, err
 	}
-	old, err := a.readOwned()
+	old, _, err := a.readOwned()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Status{}, err
 	}

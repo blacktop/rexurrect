@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/blacktop/rexurrect/internal/foreground"
 	"github.com/blacktop/rexurrect/internal/keychain/keychaintest"
+	"github.com/blacktop/rexurrect/internal/launchagent"
 	"github.com/blacktop/rexurrect/internal/rex"
 	"github.com/blacktop/rexurrect/internal/snapshot"
 	"github.com/blacktop/rexurrect/internal/state"
@@ -221,11 +223,43 @@ func TestHookCommand(t *testing.T) {
 			t.Fatalf("hook %s output differs from the embedded script: %v", shell, err)
 		}
 	}
-	for _, args := range [][]string{{"hook"}, {"hook", "bash"}, {"hook", "zsh", "extra"}} {
+	var lua bytes.Buffer
+	if err := run(t.Context(), []string{"hook", "lua"}, &lua, io.Discard); err != nil {
+		t.Fatalf("hook lua: %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(lua.Bytes(), []byte(`"`+executable+`", "agent", "wake"}, {detach = true}`)) || bytes.Contains(lua.Bytes(), []byte("--label")) {
+		t.Fatalf("hook lua output:\n%s", &lua)
+	}
+	lua.Reset()
+	if err := run(t.Context(), []string{"hook", "lua", "--label", "io.blacktop.rexurrect.test.hook", "--plist-dir", "/plists"}, &lua, io.Discard); err != nil || !bytes.Contains(lua.Bytes(), []byte(`"agent", "wake", "--label", "io.blacktop.rexurrect.test.hook", "--plist-dir", "/plists"}`)) {
+		t.Fatalf("hook lua with options: %v\n%s", err, &lua)
+	}
+	for _, args := range [][]string{{"hook"}, {"hook", "bash"}, {"hook", "zsh", "extra"}, {"hook", "lua", "extra"}, {"hook", "lua", "--plist-dir", "relative"}, {"hook", "lua", "--label", "bad label"}} {
 		var out, diagnostic bytes.Buffer
 		if err := run(t.Context(), args, &out, &diagnostic); err == nil || out.Len() != 0 {
 			t.Errorf("accepted %q", args)
 		}
+	}
+}
+
+// From a shell the parent is not a Rex server, so wake is a benign skip that
+// touches neither launchctl nor the server.
+func TestAgentWakeFromShellSkips(t *testing.T) {
+	var out bytes.Buffer
+	if err := run(t.Context(), []string{"agent", "wake", "--plist-dir", t.TempDir(), "--json"}, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var result launchagent.WakeResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.Outcome != "skipped" || !strings.Contains(result.Reason, "no owned LaunchAgent plist") || result.ParentPID != os.Getppid() {
+		t.Fatalf("wake from shell: %s %v", &out, err)
+	}
+	out.Reset()
+	if err := run(t.Context(), []string{"agent", "wake", "--plist-dir", t.TempDir()}, &out, io.Discard); err != nil || !strings.Contains(out.String(), "/io.blacktop.rexurrect: skipped (no owned LaunchAgent plist") {
+		t.Fatalf("wake text: %s %v", &out, err)
 	}
 }
 

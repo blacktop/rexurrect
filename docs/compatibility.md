@@ -934,11 +934,12 @@ go build -o "$rr_bin" ./cmd/rexurrect
 "$rr_bin" agent uninstall
 ```
 
-All five subcommands accept `--server`, `--state-dir`, `--rex`, `--label`,
+All six subcommands accept `--server`, `--state-dir`, `--rex`, `--label`,
 `--interval`, `--wait`, `--timeout`, `--call-timeout`, `--log-max-bytes`,
 `--plist-dir`, and `--json`.
 Install consumes the cycle settings; the other commands operate on the existing
-plist selected by label and directory. The installed `ProgramArguments` retain
+plist selected by label and directory, and `wake` reads its endpoint, Rex
+executable, call timeout, and wait from that plist. The installed `ProgramArguments` retain
 the configured per-call budget. Status reports `installed`, `loaded`,
 and the exact domain and plist path. It does not infer persistent enablement
 from launchctl's human-readable status text. Failures exit nonzero.
@@ -951,8 +952,9 @@ boots out the job, and removes only its owned plist. An enabled override entry
 may remain in launchd; uninstall does not leave the label marked disabled.
 Snapshots, generations, journals, logs, and the state directory remain intact.
 Lifecycle operations use only `launchctl
-bootstrap`, `bootout`, `enable`, `disable`, and `print` in `gui/UID`; they never
-start a Rex server or operate on other labels.
+bootstrap`, `bootout`, `enable`, `disable`, and `print` in `gui/UID`, and
+`wake` adds `print-disabled` and `kickstart`; they never start a Rex server or operate on other
+labels.
 
 The default interval is one minute. `--interval` accepts whole seconds from
 one minute through 24 hours. `WatchPaths` contains exactly the configured Rex
@@ -980,6 +982,57 @@ contention is bounded to five seconds. Before a write would exceed the cap,
 line. A single oversized message retains only its tail after the marker. Terminal output,
 pipes, and files other than the two configured logs retain the normal output
 format. Truncation affects logs only; snapshot and journal retention is unchanged.
+
+### Startup trigger (init.lua)
+
+`rexurrect hook lua` prints a Lua snippet for Rex's `init.lua`:
+
+```lua
+if rex.exec and rex.exec.start then
+  rex.exec.start({"/opt/homebrew/bin/rexurrect", "agent", "wake"}, {detach = true})
+end
+```
+
+The executable path is the printing binary's own absolute path; `--label` and
+`--plist-dir` are added only when they differ from the defaults. Every value
+is a Lua string literal and no shell expands it. The snippet carries no
+`timeout` option on purpose: Rex kills a detached command when its timeout
+expires, and wake bounds its own wait. Nothing edits `init.lua`; the user adds
+and removes the lines. `rex config check` accepts the snippet, and reports a
+warning rather than an error if the executable is missing.
+
+`agent wake` is that detached command. It records its parent PID before doing
+anything else, reads the owned plist (absent plist: skip), then polls `whoami`
+on the plist's endpoint every 250 ms for at most the plist's `--wait`, with
+each attempt capped at 5 s, stopping early if the parent exits. It runs
+`launchctl kickstart gui/UID/LABEL` only when the answering server's PID
+equals that parent PID. Before dispatch it checks that launchd's loaded
+program, arguments, and plist path match the owned file, that no disabled
+override is active, that the file is unchanged, and that its parent is still
+alive. Because launchctl's diagnostic text is not a stable API, an unfamiliar
+output format causes a skip rather than an unverified kick. `kickstart`
+without `-k` leaves a cycle that is already
+running untouched, and a job that is not loaded (disabled or uninstalled)
+answers 113, which wake reports as a skip. Skips exit 0 and print their reason
+(`--json` adds `outcome`, `reason`, `parent_pid`, and `server_pid`); plist,
+Rex, or launchctl failures exit nonzero. Rex reparents a detached child
+before it runs when the loader exits at once, as `rex config check` does, so
+that child sees parent PID 1 and skips without touching the endpoint. A
+reload runs the trigger again against the same instance, which the woken cycle
+reports as `same_instance`. The woken run is the ordinary configured job: its
+argv, `--scrollback`, disable state, and timer stay authoritative, and like
+any timer run it recovers whatever instance is live when it starts rather than
+pinning the instance that woke it. The existing nonblocking state lock makes
+a wake that races WatchPaths, the timer, a manual cycle, or a duplicate
+snippet a benign miss reported as `locked`; the timer remains the fallback.
+
+`TestLaunchAgentStartupTrigger` installs a private label with a 24-hour timer,
+proves a config reload alone starts a run while an empty config and a config
+check do not, reports a wake against an externally held state lock as
+`locked`, and leaves both unloaded and still-loaded disabled jobs alone. It
+rejects mismatched loaded arguments and proves startup-trigger recovery with
+RunAtLoad and WatchPaths removed. A separate restart races two snippets with
+WatchPaths and still creates exactly one restored session.
 
 ### Reboot preflight and verification
 
@@ -1044,7 +1097,7 @@ same explicit endpoint chosen during installation.
    reboot reconstruction result. If the log shows `unavailable` or an unresolved
    restore outcome, retain the state and journal and investigate that result.
 
-`TestLaunchAgentLifecycle` uses a compiled CLI, a private Rex server, a private
+`TestLaunchAgentLifecycle` and `TestLaunchAgentStartupTrigger` use a compiled CLI, a private Rex server, a private
 plist directory, and a unique label containing the test process ID. It checks
 the exact `WatchPaths` socket, RunAtLoad and interval publication, unchanged reinstall that clears a direct
 launchctl disabled override, a full disabled interval, enabled recovery after a

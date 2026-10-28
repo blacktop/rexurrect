@@ -25,6 +25,7 @@ check:
     go test -count=1 ./internal/... -run TestAutoCyclePrivateServer -v
     go test -count=1 ./cmd/... -run TestAutoBinaryPrivateServer -v
     go test -count=1 ./internal/... -run TestLaunchAgentLifecycle -v
+    go test -count=1 ./internal/... -run TestLaunchAgentStartupTrigger -v
     go test -count=1 ./internal/rex -run TestDefaultTerminalRoundTrip -v
     go test -count=1 ./internal/rex -run TestAgentResumeRoundTrip -v
 
