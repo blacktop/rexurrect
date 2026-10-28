@@ -298,10 +298,11 @@ type createBlock struct {
 	Options shellOptions `json:"options"`
 }
 type shellOptions struct {
-	Shell        string `json:"shell,omitempty"`
-	Login        *bool  `json:"login,omitempty"`
-	CWD          string `json:"cwd"`
-	InitialInput string `json:"initial_input,omitempty"`
+	Shell        string   `json:"shell,omitempty"`
+	Login        *bool    `json:"login,omitempty"`
+	Command      []string `json:"command,omitempty"`
+	CWD          string   `json:"cwd"`
+	InitialInput string   `json:"initial_input,omitempty"`
 }
 type createSplit struct {
 	Direction string     `json:"direction"`
@@ -318,18 +319,40 @@ type createdSession struct {
 	Windows []createdWindow `json:"initial_windows"`
 }
 
-func layout(n snapshot.Node, leaves *[]snapshot.SourceID) createNode {
+// startCommands decides how a restored block starts: its scrollback replay
+// command when it has one, else the clearing typed start for any block with
+// initial input, else Rex's default shell chain. Every start command ends by
+// starting that same chain, and initial_input is unchanged.
+type startCommands struct {
+	replay map[snapshot.SourceID]replayCommand
+	typed  replayCommand
+}
+
+func (s startCommands) command(id snapshot.SourceID, input string) (replayCommand, bool) {
+	if command, ok := s.replay[id]; ok {
+		return command, true
+	}
+	if input != "" && s.typed != nil {
+		return s.typed, true
+	}
+	return nil, false
+}
+
+// layout builds the create request; Block.InitialInput decides what each
+// block gets typed.
+func layout(n snapshot.Node, leaves *[]snapshot.SourceID, starts startCommands) createNode {
 	if n.Block != nil {
 		b := n.Block
 		*leaves = append(*leaves, b.ID)
-		options := shellOptions{CWD: b.CWD}
-		if b.AgentResume != nil {
-			options.InitialInput = b.AgentResume.InitialInput()
+		options := shellOptions{CWD: b.CWD, InitialInput: b.InitialInput()}
+		if command, ok := starts.command(b.ID, options.InitialInput); ok {
+			login := false
+			options.Shell, options.Login, options.Command = "none", &login, command
 		}
 		return createNode{Block: &createBlock{Flavor: shellFlavor, Label: b.Label, Options: options}}
 	}
 	p := n.Split
-	return createNode{Split: &createSplit{Direction: p.Direction, Ratio: p.Ratio, Before: layout(p.Before, leaves), After: layout(p.After, leaves)}}
+	return createNode{Split: &createSplit{Direction: p.Direction, Ratio: p.Ratio, Before: layout(p.Before, leaves, starts), After: layout(p.After, leaves, starts)}}
 }
 
 // Restore starts new shells. On error the returned map identifies every session
@@ -340,7 +363,7 @@ func (c Client) Restore(ctx context.Context, s snapshot.Snapshot) (snapshot.IDMa
 		return ids, err
 	}
 	for _, session := range s.Sessions {
-		created, err := c.createSession(ctx, session, session.Label)
+		created, err := c.createSession(ctx, session, session.Label, startCommands{})
 		if err != nil {
 			return ids, err
 		}
@@ -361,11 +384,11 @@ func (c Client) Restore(ctx context.Context, s snapshot.Snapshot) (snapshot.IDMa
 	return ids, nil
 }
 
-func (c Client) createSession(ctx context.Context, session snapshot.Session, label string) (createdSession, error) {
+func (c Client) createSession(ctx context.Context, session snapshot.Session, label string, starts startCommands) (createdSession, error) {
 	windows := make([]createWindow, 0, len(session.Windows))
 	for _, w := range session.Windows {
 		var leaves []snapshot.SourceID
-		windows = append(windows, createWindow{Label: w.Label, Layout: layout(w.Layout, &leaves)})
+		windows = append(windows, createWindow{Label: w.Label, Layout: layout(w.Layout, &leaves, starts)})
 	}
 	var created createdSession
 	err := c.Call(ctx, "session.create", map[string]any{"label": label, "initial_windows": windows}, &created)
@@ -392,7 +415,7 @@ func mapCreated(session snapshot.Session, created createdSession, ids snapshot.I
 		w := created.Windows[i]
 		err = errors.Join(err, putMapping(ids, session.Windows[i].ID, w.ID))
 		var leaves []snapshot.SourceID
-		layout(session.Windows[i].Layout, &leaves)
+		layout(session.Windows[i].Layout, &leaves, startCommands{})
 		if len(w.Blocks) != len(leaves) {
 			err = errors.Join(err, errors.New("session.create block inventory differs"))
 		}

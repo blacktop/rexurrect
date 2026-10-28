@@ -202,19 +202,24 @@ results take precedence over the general [Rex documentation](https://www.superlo
 
 ## Snapshot versions
 
-Generations written by this version use snapshot version 3. Version 1
-generations and journals written by `8974b2e` and version 2 generations written
-by v0.1.0 (`58c87d7`) still load and restore; the generation envelope, pointer,
-and journal binding formats remain unchanged. Agent receipts and
+Generations written by this version use snapshot version 5. Version 1
+generations and journals written by `8974b2e`, version 2 generations written
+by v0.1.0 (`58c87d7`), version 3 generations written by v0.1.1, and version 4
+generations written by v0.2.0 still load and restore; the generation envelope,
+pointer, and journal binding formats remain unchanged. Agent receipts and
 receipt-pruning reports belong to snapshot v2; the host and command receipt
-form belongs to v3. Publishing upgrades an older snapshot in place without
-changing what any of its receipts replay.
+form belongs to v3; encrypted scrollback references and the
+`scrollback_skipped` report belong to v4; recorded foreground commands and the
+`foreground_skipped` report belong to v5. Publishing upgrades an older
+snapshot in place without changing what any of its receipts replay.
 
 Downgrading cannot read newer generations and fails closed. The `8974b2e`
 reader rejects every v2 shape; `TestSnapshotV1Compatibility` compiles that exact
 reader and writer and checks `status`, `restore`, and `auto` preserve every
-state file byte for byte. The v0.1.0 reader rejects v3 generations the same way
-(`TestReleasedReaderCompatibility`). The transitional state is the exception:
+state file byte for byte. The v0.1.0 reader rejects v3 and v4 generations the same way: a v4 generation
+with a scrollback reference fails on the unknown `scrollback` field, one
+without on the version (`TestReleasedReaderCompatibility`). The `scrollback/`
+directory and its pins are ignored by older readers' generation pruning. The transitional state is the exception:
 a v0.1.0 generation beside a format 2 `receipts.json`, which exists as soon as a
 hook registers after the upgrade and before the first v3 save. v0.1.0 `status`
 still works on that state and `receipt list` fails on the unknown field, but
@@ -339,6 +344,22 @@ canonical cwd, focus, zoom, a floating layer, a detached block, envelope
 round-tripping, last-known-good, status counts, and the empty-server guard.
 Focused tests cover invalid and oversized state, leftover files, exclusive
 locking, and transient/persistent structural revision changes.
+
+### Recovery reporting
+
+`status` classifies every shell block of the current generation the way a
+restore would treat it and reports the counts as `recovery`: `agents` (a
+receipt whose resume command runs), `typed` (a recorded foreground command
+typed at the prompt, never run), `plain` (no input), and `inert` (a receipt
+that produces no input by policy, such as a legacy `claude-team`). A receipt
+decides the class even when a foreground command was also recorded. The text
+form prints `Recovery: N agents resume, N commands typed, N plain shells, N
+inert receipts`. `status` also reports `rex_api`, the API revision range the
+reachable server advertises in `server.version`: `server_api_min_revision`
+and `server_api_revision`. Rex leaves either field out when it is 0, and
+servers from before the fields existed leave both out, so 0 means the server
+did not advertise it. The text form prints `Rex API revision N (minimum M)`.
+No supported revision is compiled in and no comparison is made.
 
 ## Journaled restore (S1b)
 
@@ -498,6 +519,12 @@ the saved generation and unchanged automatic result.
 default-terminal panes before its first run, checks publication of generation
 1, checks same-instance JSON and exit status, and checks a nonzero unavailable
 outcome.
+
+The automatic result also carries `rex_api` once the capture has read the
+server identity and, when a restore ran, `restored`: the same four counts for the sessions that
+invocation created (a resumed restore counts only the sessions it creates).
+The stderr line includes both, so a `complete` restore that resumed nothing
+reads as such. `restore --json` carries the same counts as `recovery`.
 
 ## Opt-in agent receipts (S3a)
 
@@ -734,6 +761,144 @@ and an inert second restore. Its
 real login-shell gate must run outside the agent sandbox:
 `go test ./internal/rex -run TestAgentResumeRoundTrip -count=1 -v`.
 
+## Encrypted scrollback (S4)
+
+`save --scrollback` and `auto --scrollback` (both off by default) capture each
+shell block's earlier output and replay it above the restored prompt. Nothing
+about layout, cwd, or receipts depends on it: every failure below is a
+per-block skip recorded in `report.scrollback_skipped` (and
+`capture_scrollback_skipped` in the automatic result), never a failed save.
+A failed terminal read or sidecar write is a skip too (`scrollback read: …`,
+`scrollback sidecar: …`); only the save's own cancellation stops a capture. An
+empty capture provisions no key, and the publication guards (same host, empty
+snapshot over nonempty history) run before any scrollback state is written.
+`save` and `restore` print each skip (`Block …: scrollback not captured (…)`
+and `… not replayed (…)`); `auto --json` and `restore --json` carry the lists.
+
+Capture, per block: `terminal.modes` must report the primary screen, then
+`terminal.format` with `format: "vt", unwrap: true` (no `extra_*` flags), then
+`modes` again; a block on the alternate screen at either read is skipped.
+Rex's `code=too_large` response (its 1 MiB cap) is a skip, parsed from the
+CLI's trailing `(status=NNN code=xxx)` pair. The output is sanitized to the
+replayable subset measured in the contract probe: printable UTF-8, CR, LF, and
+`ESC [ … m`. Every other escape sequence, control byte, and C1 character is
+dropped. Empty output, more than 1 MiB per block, and more than 32 MiB per
+generation are skips. Capture is sequential.
+
+Storage: the sanitized bytes are zlib-compressed and encrypted with AES-256-GCM
+under a key derived (HKDF-SHA256, random 32-byte salt) from a per-state-store
+master key; the 92-byte header (`RRSBLOB1`, key ID, object ID, salt, plaintext
+length) and a binding of state ID, Rex host ID, and source block ID are
+authenticated. The object ID is an HMAC over binding and plaintext with a
+separate derived key, so an unchanged block reuses its sidecar (after
+authenticating it) instead of sealing a new one, without publishing a plain
+content hash. Sidecars are immutable files
+`scrollback/<key_id>/<object_id>.rrsb` (0600 in 0700 directories, ciphertext
+in the temporary file too). No plaintext scrollback is ever written to disk.
+
+Key lifecycle: the master key lives in the login keychain under service
+`io.blacktop.rexurrect.scrollback.<key_id>`, written through `security -i` on
+stdin and read with `find-generic-password -w`, each call bounded by a 3 s
+deadline; a locked keychain prompts and blocks, so a timeout is "key
+unavailable", not an error. `scrollback/state.json` holds the nonsecret state
+ID, key ID, and a `pending`/`ready` status. Provisioning writes and syncs
+`pending` in `scrollback/` (the temporary file lives beside it), creates the
+item, then writes `ready`; a `pending` record whose item exists is
+finalized. A `ready` key missing from the keychain is reported
+(`scrollback key missing from the keychain`) and never regenerated. A backup
+of the state directory does not contain the key.
+
+Retention: after each publication, sidecars not referenced by the current
+generation, the last known good one, or an unexpired pin are deleted, along
+with temporary files; an unchanged automatic cycle repeats the pruning, so a
+prune that failed after a publication is retried. `scrollback/`,
+`scrollback/<key_id>/`, and `scrollback/pins/` must each be a real private
+directory (mode 0700); a symlink or a shared mode refuses the write or the
+prune rather than following it. Restore pins the references it is about to
+replay (`scrollback/pins/<generation>`, listing them) before its first create
+intent;
+pins expire after one hour and are not released earlier, because the restored
+shells read their sidecars at startup, which no journal record observes.
+
+Replay: before any session is created, restore loads the key and authenticates
+every referenced sidecar; blocks that fail are restored as plain shells and
+listed in the restore result's `scrollback_skipped`. If the pin cannot be
+written, every replay is skipped (`scrollback pin: …`) and plain shells are
+restored. A block that passes is
+created with `shell: "none"`, `login: false`, and a command that prints the
+decrypted bytes and then starts Rex's own login chain
+(`login -flp USER /bin/bash --noprofile --norc -c 'name=$1; shift; exec -a "-$name" -- "$@"' rex-login SHELL PATH`,
+with the shell read from the directory service), so startup files run once as
+a login shell, the `Last login:` banner separates old output from new, and the
+agent `initial_input` is typed unchanged. The decryptor is
+`rexurrect scrollback replay --state-dir DIR --key-id ID --object-id ID --host ID --block ID`
+with the state directory made absolute, because the command runs in the
+block's restored cwd; it reads without the state lock (sidecars are immutable and pinned), writes
+to the terminal only after the whole blob authenticates, and writes nothing on
+any failure, so the shell starts either way. Replay is decided once per
+restore and only for the sessions that invocation creates, so a lost
+acknowledgement cannot replay a block twice and a resumed restore neither
+re-pins nor reports sessions it already created. A restore deadline that
+expires while the key is loading fails the restore instead of degrading to
+plain shells, so no create intent is recorded under a cancelled context.
+
+`TestScrollbackCaptureAndReplayPrivateServer` runs this against a private Rex
+server with a file-backed keychain stand-in: capture with an alternate-screen
+skip, sidecar reuse on an unchanged save, replay through the login chain with
+the agent command typed once and the replayed text never executed, and the
+missing-key degradation. `REXURRECT_SECURITY_TOOL` substitutes the security
+tool for that test only.
+
+## Foreground commands (S5)
+
+A restored pane gets the command it was running when it was saved typed at
+its new prompt, never executed, once the shell hook is installed. The hooks
+ship inside the binary: add `eval "$(rexurrect hook zsh)"` to `~/.zshrc`, or
+`rexurrect hook fish | source` to `~/.config/fish/config.fish` (sources:
+[`internal/foreground`](../internal/foreground)). bash has no native
+`preexec` and is not supported. Nothing is inferred from processes: without the hook no pane
+has a record, and `ps` is never consulted.
+
+Recording: the hook's `preexec` writes the command line as typed to
+`<state-dir>/foreground/<block-uuid>` (a private temporary file renamed into
+place, under `umask 077`, with no lock, no Rex call, and no subprocess), and
+`precmd`/`fish_postexec` removes it, as does the shell's exit hook, so a
+record exists only while a foreground command is running. The zsh hook uses zsh's file builtins so no
+command waits on a fork; fish creates the directory once and pays one
+external `mv` and `rm` per command, called through `command` so user
+functions of those names never take part. That is exactly what a restart interrupts; a
+command that finished is never typed back, so no ignore list exists. The hook
+installs only in the outermost shell of a pane (`REX_BLOCK` set,
+`RR_FOREGROUND` unset, then exported), so agent tool shells, `su`, and
+`nix-shell` inherit the marker and stay silent. A command typed with a leading
+space is not recorded.
+
+Capture, per shell block: only a well-formed block ID (`block:<uuid>`) names a
+record; the record is read with the same private-file rules as every state file (0600, no symlinks, directory 0700), trimmed, and
+must be one line of printable UTF-8 of at most 1024 bytes: no control,
+format, or other non-printable code point (Unicode `IsPrint`), which includes
+the newline that would run it. A usable record
+becomes `block.foreground`; an unusable one is reported in
+`report.foreground_skipped` (`save` prints `Block …: foreground not recorded
+(…)`, `auto --json` carries the list), and a records directory that is not
+private skips every block and is left untouched. Records of blocks that no longer exist and stale
+temporary files are deleted after a one-minute grace, so a pane created
+during a capture keeps its record, and only once the generation is published
+(or an unchanged automatic cycle confirms it): a save refused by the host or
+empty-snapshot guards deletes nothing. `auto --json` carries
+`capture_foreground_skipped`. The record is part of the snapshot, so a
+pane that starts or finishes a command between automatic cycles publishes a
+new generation.
+
+Restore: a block with an agent receipt types the receipt's resume command
+(and runs it) as before; otherwise a block with a foreground command gets it
+as `initial_input` without a trailing newline. Any block with initial input
+that does not replay scrollback starts through the same clearing login chain
+as a replay, without the decryptor, because the terminal echoes typed initial
+input before any process can take it and the clear removes that stray copy.
+The command sits at the prompt after any replayed scrollback and the login
+banner, ready for Enter or Ctrl-C.
+
 ## Per-user LaunchAgent (S2b)
 
 `agent install` installs and enables one job in `gui/UID`, where UID is the
@@ -771,11 +936,12 @@ go build -o "$rr_bin" ./cmd/rexurrect
 "$rr_bin" agent uninstall
 ```
 
-All five subcommands accept `--server`, `--state-dir`, `--rex`, `--label`,
+All six subcommands accept `--server`, `--state-dir`, `--rex`, `--label`,
 `--interval`, `--wait`, `--timeout`, `--call-timeout`, `--log-max-bytes`,
 `--plist-dir`, and `--json`.
 Install consumes the cycle settings; the other commands operate on the existing
-plist selected by label and directory. The installed `ProgramArguments` retain
+plist selected by label and directory, and `wake` reads its endpoint, Rex
+executable, call timeout, and wait from that plist. The installed `ProgramArguments` retain
 the configured per-call budget. Status reports `installed`, `loaded`,
 and the exact domain and plist path. It does not infer persistent enablement
 from launchctl's human-readable status text. Failures exit nonzero.
@@ -788,8 +954,9 @@ boots out the job, and removes only its owned plist. An enabled override entry
 may remain in launchd; uninstall does not leave the label marked disabled.
 Snapshots, generations, journals, logs, and the state directory remain intact.
 Lifecycle operations use only `launchctl
-bootstrap`, `bootout`, `enable`, `disable`, and `print` in `gui/UID`; they never
-start a Rex server or operate on other labels.
+bootstrap`, `bootout`, `enable`, `disable`, and `print` in `gui/UID`, and
+`wake` adds `print-disabled` and `kickstart`; they never start a Rex server or operate on other
+labels.
 
 The default interval is one minute. `--interval` accepts whole seconds from
 one minute through 24 hours. `WatchPaths` contains exactly the configured Rex
@@ -817,6 +984,57 @@ contention is bounded to five seconds. Before a write would exceed the cap,
 line. A single oversized message retains only its tail after the marker. Terminal output,
 pipes, and files other than the two configured logs retain the normal output
 format. Truncation affects logs only; snapshot and journal retention is unchanged.
+
+### Startup trigger (init.lua)
+
+`rexurrect hook lua` prints a Lua snippet for Rex's `init.lua`:
+
+```lua
+if rex.exec and rex.exec.start then
+  rex.exec.start({"/opt/homebrew/bin/rexurrect", "agent", "wake"}, {detach = true})
+end
+```
+
+The executable path is the printing binary's own absolute path; `--label` and
+`--plist-dir` are added only when they differ from the defaults. Every value
+is a Lua string literal and no shell expands it. The snippet carries no
+`timeout` option on purpose: Rex kills a detached command when its timeout
+expires, and wake bounds its own wait. Nothing edits `init.lua`; the user adds
+and removes the lines. `rex config check` accepts the snippet, and reports a
+warning rather than an error if the executable is missing.
+
+`agent wake` is that detached command. It records its parent PID before doing
+anything else, reads the owned plist (absent plist: skip), then polls `whoami`
+on the plist's endpoint every 250 ms for at most the plist's `--wait`, with
+each attempt capped at 5 s, stopping early if the parent exits. It runs
+`launchctl kickstart gui/UID/LABEL` only when the answering server's PID
+equals that parent PID. Before dispatch it checks that launchd's loaded
+program, arguments, and plist path match the owned file, that no disabled
+override is active, that the file is unchanged, and that its parent is still
+alive. Because launchctl's diagnostic text is not a stable API, an unfamiliar
+output format causes a skip rather than an unverified kick. `kickstart`
+without `-k` leaves a cycle that is already
+running untouched, and a job that is not loaded (disabled or uninstalled)
+answers 113, which wake reports as a skip. Skips exit 0 and print their reason
+(`--json` adds `outcome`, `reason`, `parent_pid`, and `server_pid`); plist,
+Rex, or launchctl failures exit nonzero. Rex reparents a detached child
+before it runs when the loader exits at once, as `rex config check` does, so
+that child sees parent PID 1 and skips without touching the endpoint. A
+reload runs the trigger again against the same instance, which the woken cycle
+reports as `same_instance`. The woken run is the ordinary configured job: its
+argv, `--scrollback`, disable state, and timer stay authoritative, and like
+any timer run it recovers whatever instance is live when it starts rather than
+pinning the instance that woke it. The existing nonblocking state lock makes
+a wake that races WatchPaths, the timer, a manual cycle, or a duplicate
+snippet a benign miss reported as `locked`; the timer remains the fallback.
+
+`TestLaunchAgentStartupTrigger` installs a private label with a 24-hour timer,
+proves a config reload alone starts a run while an empty config and a config
+check do not, reports a wake against an externally held state lock as
+`locked`, and leaves both unloaded and still-loaded disabled jobs alone. It
+rejects mismatched loaded arguments and proves startup-trigger recovery with
+RunAtLoad and WatchPaths removed. A separate restart races two snippets with
+WatchPaths and still creates exactly one restored session.
 
 ### Reboot preflight and verification
 
@@ -881,7 +1099,7 @@ same explicit endpoint chosen during installation.
    reboot reconstruction result. If the log shows `unavailable` or an unresolved
    restore outcome, retain the state and journal and investigate that result.
 
-`TestLaunchAgentLifecycle` uses a compiled CLI, a private Rex server, a private
+`TestLaunchAgentLifecycle` and `TestLaunchAgentStartupTrigger` use a compiled CLI, a private Rex server, a private
 plist directory, and a unique label containing the test process ID. It checks
 the exact `WatchPaths` socket, RunAtLoad and interval publication, unchanged reinstall that clears a direct
 launchctl disabled override, a full disabled interval, enabled recovery after a
@@ -931,8 +1149,10 @@ supported tiled tree fails capture. Save checks structural stability around
 Capture; the underlying S0 Capture remains non-atomic. Remote hosts, alternate
 block flavors, shell selection,
 environment, pane ownership, client/app selection, layer bounds/stacking, and
-terminal contents are not preserved. Other Rex versions and platforms remain
-untested.
+terminal modes and alternate-screen state are not preserved. Other Rex versions
+and platforms remain untested.
 
-Arbitrary command replay and scrollback remain outside this slice. Agent
-resumption is limited to the validated, opt-in receipt commands above.
+Optional [encrypted scrollback](#encrypted-scrollback-s4) replays captured
+primary-screen output, and [foreground recording](#foreground-commands-s5)
+restores the recorded command at the prompt without executing it. Automatic
+agent resumption is limited to the validated, opt-in receipt commands above.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -192,5 +193,20 @@ func TestAutoBinaryPrivateServer(t *testing.T) {
 		t.Fatalf("binary duplicated the session: %v %v", ids, err)
 	}
 	runAuto(filepath.Join(root, "missing"), "100ms", "unavailable", 1, 0, false)
-	t.Logf("compiled auto saved generation 1, skipped an unchanged capture on private Rex PID %d, and returned a structured nonzero unavailable outcome", server.Process.Pid)
+
+	// A manual save whose scrollback capture degrades still succeeds, and
+	// its human output names every skipped block and the reason.
+	saveCtx, stopSave := context.WithTimeout(t.Context(), cycleTimeout)
+	defer stopSave()
+	save := exec.CommandContext(saveCtx, binary, "save", "--server", "unix://"+client.Socket, "--state-dir", filepath.Join(root, "saved"), "--rex", rexBinary, "--call-timeout", client.CallTimeout.String(), "--scrollback")
+	save.Env = append(slices.Clone(client.Env), "REXURRECT_SECURITY_TOOL="+filepath.Join(root, "missing-security"))
+	var saveOut, saveErr bytes.Buffer
+	save.Stdout, save.Stderr = &saveOut, &saveErr
+	if err := save.Run(); err != nil {
+		t.Fatalf("save --scrollback: %v\n%s%s", err, &saveOut, &saveErr)
+	}
+	if out := saveOut.String(); !strings.Contains(out, "Saved generation 2 ") || strings.Count(out, ": scrollback not captured (scrollback key: ") != 2 {
+		t.Fatalf("save output does not report the two skipped blocks:\n%s", out)
+	}
+	t.Logf("compiled auto saved generation 1, skipped an unchanged capture on private Rex PID %d, returned a structured nonzero unavailable outcome, and manual save reported its scrollback skips", server.Process.Pid)
 }

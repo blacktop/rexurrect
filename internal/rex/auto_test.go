@@ -33,8 +33,22 @@ func TestAutoUnchangedPrivateServer(t *testing.T) {
 	}
 	cycle("first_run", 0, 1, "")
 	before := savedFiles(t, dir)
+	// Files a failed scrollback prune left behind are removed by the next
+	// unchanged cycle, which otherwise changes nothing.
+	stale := filepath.Join(dir, "scrollback", strings.Repeat("ab", 16))
+	if err := os.MkdirAll(stale, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".tmp-leftover", strings.Repeat("0", 64) + ".rrsb"} {
+		if err := os.WriteFile(filepath.Join(stale, name), []byte("stale"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for range 2 {
 		cycle("same_instance", 1, 0, "unchanged")
+		if entries, err := os.ReadDir(stale); err != nil || len(entries) != 0 {
+			t.Fatalf("unchanged cycle left stale scrollback files: %v %v", entries, err)
+		}
 		if !reflect.DeepEqual(before, savedFiles(t, dir)) {
 			t.Fatal("unchanged cycle modified generation or pointer bytes")
 		}
@@ -51,6 +65,23 @@ func TestAutoUnchangedPrivateServer(t *testing.T) {
 	manual, err := s.client.Save(t.Context(), dir, false)
 	if err != nil || manual.Generation != 4 {
 		t.Fatalf("unchanged manual save: %+v %v", manual, err)
+	}
+	// An automatic save reports the foreground records it could not attach.
+	writeForeground(t, dir, snapshot.SourceID(created.Windows[0].Blocks[0]), strings.Repeat("x", snapshot.MaxForeground+1), 0)
+	out, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout)
+	if err != nil || out.SavedGeneration != 5 || len(out.CaptureForegroundSkipped) != 1 || !strings.Contains(out.CaptureForegroundSkipped[0].Reason, "1024 bytes") {
+		t.Fatalf("automatic foreground skips: %+v %v", out, err)
+	}
+	// A records directory that is not private degrades the cycle, never fails
+	// it: every block is reported and the directory is left alone.
+	if err := os.Chmod(filepath.Join(dir, "foreground"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, generation := range []uint64{6, 0} {
+		out, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout)
+		if err != nil || out.SavedGeneration != generation || len(out.CaptureForegroundSkipped) != 1 || !strings.Contains(out.CaptureForegroundSkipped[0].Reason, "private directory") {
+			t.Fatalf("shared records directory: %+v %v", out, err)
+		}
 	}
 }
 
@@ -107,6 +138,11 @@ func TestAutoCyclePrivateServer(t *testing.T) {
 	restarted := cycle("new_instance", 2, 3)
 	if restarted.InstanceID == first.InstanceID || restarted.HostID != first.HostID || restarted.RestoreOutcome != "complete" {
 		t.Fatalf("restart decision: %+v", restarted)
+	}
+	// Plain shells only: the summary says so, and the server's API revision
+	// is reported on every cycle.
+	if restarted.Restored.Plain == 0 || restarted.Restored.Agents+restarted.Restored.Typed+restarted.Restored.Inert != 0 || restarted.RexAPI.ServerAPIRevision == 0 || first.Restored != (snapshot.Recovery{}) {
+		t.Fatalf("restore summary: %+v first %+v", restarted.Restored, first.Restored)
 	}
 	j := journalFor(t, s.client, dir, e)
 	if j.Status(e).Outcome != "complete" {
@@ -276,7 +312,7 @@ func TestAutoCyclePrivateServerRecovery(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "saved")
 			saved, marker := prepareIntent(t, s.client, dir, e)
 			first, second := saved.Snapshot.Sessions[0], saved.Snapshot.Sessions[1]
-			created, err := s.client.createSession(t.Context(), first, marker)
+			created, err := s.client.createSession(t.Context(), first, marker, startCommands{})
 			if err != nil {
 				t.Fatal(err)
 			}

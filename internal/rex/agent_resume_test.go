@@ -153,7 +153,7 @@ func TestAgentInitialInputOptions(t *testing.T) {
 	for _, harness := range []string{"claude", "claude-ddb", "codex", "codex-team", "claude-team", "unknown"} {
 		r := agentReceipt(1, harness)
 		var leaves []snapshot.SourceID
-		n := layout(snapshot.Node{Block: &snapshot.Block{ID: snapshot.SourceID(r.BlockID), CWD: "/", AgentResume: &r}}, &leaves)
+		n := layout(snapshot.Node{Block: &snapshot.Block{ID: snapshot.SourceID(r.BlockID), CWD: "/", AgentResume: &r}}, &leaves, startCommands{})
 		data, err := json.Marshal(n.Block.Options)
 		if err != nil {
 			t.Fatal(err)
@@ -234,7 +234,7 @@ esac
 	}
 	// Reproduce the durable intermediate state: publication succeeded, but
 	// the following receipt-file update did not run.
-	e, err := c.stableCapture(t.Context())
+	e, _, err := c.stableCapture(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +527,7 @@ printf '%%s\n' "$REX_BLOCK" >> '%[7]s'
 	}
 	before, files := readMarker(), savedFiles(t, dir)
 	again, err := s.client.RestoreSaved(t.Context(), dir, saved.Generation)
-	if err != nil || !reflect.DeepEqual(again, result) || !reflect.DeepEqual(before, readMarker()) || !reflect.DeepEqual(files, savedFiles(t, dir)) {
+	if err != nil || !sameRestore(again, result) || !reflect.DeepEqual(before, readMarker()) || !reflect.DeepEqual(files, savedFiles(t, dir)) {
 		t.Fatalf("second restore changed state: %+v %v", again, err)
 	}
 	var finished []string
@@ -547,7 +547,7 @@ printf '%%s\n' "$REX_BLOCK" >> '%[7]s'
 		}
 	}
 	beforeFiles := savedFiles(t, dir)
-	if again, err := s.client.RestoreSaved(t.Context(), dir, saved.Generation); err != nil || !reflect.DeepEqual(again, result) || !reflect.DeepEqual(beforeFiles, savedFiles(t, dir)) || !reflect.DeepEqual(before, readMarker()) {
+	if again, err := s.client.RestoreSaved(t.Context(), dir, saved.Generation); err != nil || !sameRestore(again, result) || !reflect.DeepEqual(beforeFiles, savedFiles(t, dir)) || !reflect.DeepEqual(before, readMarker()) {
 		t.Fatalf("completed restore re-registered an exited agent: %+v %v", again, err)
 	}
 	t.Logf("resumed and cleared %d custom-command conversations; legacy claude-team and future-agent received no input; compared %d ID mappings", liveAgents, len(result.IDMap))

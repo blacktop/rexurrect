@@ -132,7 +132,7 @@ func TestRestoreRecoveryPrivateServer(t *testing.T) {
 		mustCall(t, s.client, "session.destroy", map[string]any{"session_id": id}, nil)
 	}
 	// A matching display label must not cause an existing session to be adopted.
-	unrelated, err := s.client.createSession(t.Context(), e.Snapshot.Sessions[0], e.Snapshot.Sessions[0].Label)
+	unrelated, err := s.client.createSession(t.Context(), e.Snapshot.Sessions[0], e.Snapshot.Sessions[0].Label, startCommands{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestRestoreRecoveryPrivateServer(t *testing.T) {
 		t.Fatalf("restore: %+v %v", result, err)
 	}
 	compareRestored(t, s.client, e, result.IDMap)
-	if !reflect.DeepEqual(journalFor(t, s.client, dir, e).Status(e), result) {
+	if !sameRestore(journalFor(t, s.client, dir, e).Status(e), result) {
 		t.Fatal("journal differs from returned mappings")
 	}
 	if !bytes.Equal(unrelatedBefore, rawSessionView(t, s.client, unrelated.ID)) {
@@ -155,7 +155,7 @@ func TestRestoreRecoveryPrivateServer(t *testing.T) {
 		restoredViews[id] = rawSessionView(t, s.client, id)
 	}
 	again, err := s.client.RestoreSaved(t.Context(), dir, e.Generation)
-	if err != nil || !reflect.DeepEqual(again, result) || !reflect.DeepEqual(before, listSessions(t, s.client)) || !reflect.DeepEqual(files, savedFiles(t, dir)) {
+	if err != nil || !sameRestore(again, result) || !reflect.DeepEqual(before, listSessions(t, s.client)) || !reflect.DeepEqual(files, savedFiles(t, dir)) {
 		t.Fatalf("second restore created a session or changed its journal: %+v %v", again, err)
 	}
 	for id, view := range restoredViews {
@@ -164,14 +164,14 @@ func TestRestoreRecoveryPrivateServer(t *testing.T) {
 		}
 	}
 	status, err := s.client.Status(t.Context(), dir)
-	if err != nil || !reflect.DeepEqual(status.Journal, result) {
+	if err != nil || !sameRestore(status.Journal, result) {
 		t.Fatalf("journal status: %+v %v", status.Journal, err)
 	}
 	missing := result.IDMap[e.Snapshot.Sessions[1].ID]
 	mustCall(t, s.client, "session.destroy", map[string]any{"session_id": missing}, nil)
 	before = listSessions(t, s.client)
 	again, err = s.client.RestoreSaved(t.Context(), dir, e.Generation)
-	if err == nil || !strings.Contains(err.Error(), "recorded complete session "+string(missing)+" is missing") || !reflect.DeepEqual(again, result) {
+	if err == nil || !strings.Contains(err.Error(), "recorded complete session "+string(missing)+" is missing") || !sameRestore(again, result) {
 		t.Fatalf("missing completed session: %+v %v", again, err)
 	}
 	status, err = s.client.Status(t.Context(), dir)
@@ -207,7 +207,7 @@ func TestRestoreRecoveryPrivateServer(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			recoveryDir := filepath.Join(t.TempDir(), "saved")
 			saved, marker := prepareIntent(t, s.client, recoveryDir, one)
-			created, err := s.client.createSession(t.Context(), saved.Snapshot.Sessions[0], marker)
+			created, err := s.client.createSession(t.Context(), saved.Snapshot.Sessions[0], marker, startCommands{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -241,7 +241,7 @@ func TestRestoreRecoveryPrivateServer(t *testing.T) {
 		recoveryDir := filepath.Join(t.TempDir(), "saved")
 		saved, marker := prepareIntent(t, s.client, recoveryDir, one)
 		for range 2 {
-			if _, err := s.client.createSession(t.Context(), saved.Snapshot.Sessions[0], marker); err != nil {
+			if _, err := s.client.createSession(t.Context(), saved.Snapshot.Sessions[0], marker, startCommands{}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -425,4 +425,12 @@ esac
 	if _, err := os.Stat(log); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("invalid state reached a server mutation: %v", err)
 	}
+}
+
+// sameRestore compares two restore results apart from Recovery, which counts
+// the sessions each invocation created and so differs between a creating
+// restore and an inert one.
+func sameRestore(a, b state.JournalStatus) bool {
+	a.Recovery, b.Recovery = snapshot.Recovery{}, snapshot.Recovery{}
+	return reflect.DeepEqual(a, b)
 }

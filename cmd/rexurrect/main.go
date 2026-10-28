@@ -22,6 +22,27 @@ import (
 
 var version = "dev"
 
+// rexAPIText words the advertised API range; 0 means the server left the
+// field out.
+func rexAPIText(api rex.RexAPI) string {
+	return fmt.Sprintf("Rex API revision %d (minimum %d)", api.ServerAPIRevision, api.ServerAPIMinRevision)
+}
+
+func recoveryText(r snapshot.Recovery) string {
+	return fmt.Sprintf("%d agents resume, %d commands typed, %d plain shells, %d inert receipts", r.Agents, r.Typed, r.Plain, r.Inert)
+}
+
+// printSkips lists the blocks an optional feature skipped, so a manual save
+// or restore never looks fully successful when it was not.
+func printSkips(w io.Writer, what string, skips []snapshot.Skip) error {
+	var err error
+	for _, skip := range skips {
+		_, printErr := fmt.Fprintf(w, "Block %s: %s (%s)\n", skip.BlockID, what, skip.Reason)
+		err = errors.Join(err, printErr)
+	}
+	return err
+}
+
 func reportRexSubstitution(stderr io.Writer, sub *rexbin.Substitution) error {
 	if sub == nil {
 		return nil
@@ -51,7 +72,7 @@ func main() {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(stdout, "Usage: rexurrect <save|restore|status|auto> --server unix://PATH --state-dir DIR [options]\n       rexurrect agent <install|enable|disable|uninstall|status> [options]\n       rexurrect receipt <set|clear|list> --server unix://PATH --state-dir DIR [options]\n       rexurrect version")
+		_, err := fmt.Fprintln(stdout, "Usage: rexurrect <save|restore|status|auto> --server unix://PATH --state-dir DIR [options]\n       rexurrect agent <install|enable|disable|uninstall|status|wake> [options]\n       rexurrect receipt <set|clear|list> --server unix://PATH --state-dir DIR [options]\n       rexurrect scrollback replay --state-dir DIR --key-id ID --object-id ID --host ID --block ID\n       rexurrect hook <zsh|fish|lua> [options]\n       rexurrect version")
 		if len(args) == 0 {
 			return errors.New("a command is required")
 		}
@@ -71,6 +92,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if command == "receipt" {
 		return runReceipt(ctx, args[1:], stdout, stderr)
 	}
+	if command == "scrollback" {
+		return runScrollback(ctx, args[1:], stdout, stderr)
+	}
+	if command == "hook" {
+		return runHook(args[1:], stdout, stderr)
+	}
 	if command != "save" && command != "status" && command != "restore" && command != "auto" {
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -84,6 +111,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var generation uint64
 	var wait, timeout time.Duration
 	var logMaxBytes int64
+	var captureScrollback bool
+	if command == "save" || command == "auto" {
+		flags.BoolVar(&captureScrollback, "scrollback", false, "save encrypted terminal scrollback (key in the login keychain)")
+	}
 	if command == "save" {
 		flags.BoolVar(&allowEmpty, "allow-empty", false, "allow replacing nonempty saved state with an empty server")
 	} else {
@@ -113,7 +144,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err := rex.ValidateCallTimeout(*callTimeout); err != nil {
 		return err
 	}
-	client := rex.Client{Binary: *binary, Socket: socket, CallTimeout: *callTimeout}
+	client := rex.Client{Binary: *binary, Socket: socket, CallTimeout: *callTimeout, Scrollback: captureScrollback, Keychain: keychainStore()}
 	if command == "auto" {
 		var err error
 		stdout, err = autolog.Wrap(stdout, filepath.Join(*dir, autolog.OutName), logMaxBytes)
@@ -128,10 +159,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		var textErr error
 		if cycleErr != nil {
 			_, textErr = fmt.Fprintf(stderr, "Automatic cycle %s: %s\n", result.State, result.Reason)
-		} else if result.Reason == "unchanged" {
-			_, textErr = fmt.Fprintf(stderr, "Automatic cycle %s: unchanged generation %d (instance %s, restore %s)\n", result.State, result.Generation, result.InstanceID, result.RestoreOutcome)
 		} else {
-			_, textErr = fmt.Fprintf(stderr, "Automatic cycle %s: saved generation %d (instance %s, restore %s)\n", result.State, result.SavedGeneration, result.InstanceID, result.RestoreOutcome)
+			kind, generation := "saved", result.SavedGeneration
+			if result.Reason == "unchanged" {
+				kind, generation = "unchanged", result.Generation
+			}
+			detail := fmt.Sprintf("instance %s, restore %s", result.InstanceID, result.RestoreOutcome)
+			if result.Restored != (snapshot.Recovery{}) {
+				detail += ", " + recoveryText(result.Restored)
+			}
+			_, textErr = fmt.Fprintf(stderr, "Automatic cycle %s: %s generation %d (%s, %s)\n", result.State, kind, generation, detail, rexAPIText(result.RexAPI))
 		}
 		textErr = errors.Join(textErr, reportRexSubstitution(stderr, result.RexBinarySubstitution))
 		for _, sub := range result.CaptureCWDSubstitutions {
@@ -161,7 +198,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_, printErr := fmt.Fprintf(stdout, "Pruned receipt %s\n", id)
 			err = errors.Join(err, printErr)
 		}
-		return err
+		err = errors.Join(err, printSkips(stdout, "scrollback not captured", saved.Report.ScrollbackSkipped))
+		return errors.Join(err, printSkips(stdout, "foreground not recorded", saved.Report.ForegroundSkipped))
 	}
 	if command == "restore" {
 		result, restoreErr := client.RestoreSaved(ctx, *dir, generation)
@@ -189,6 +227,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_, err := fmt.Fprintf(stdout, "Block %s: %s not resumed (%s)\n", skip.BlockID, skip.Harness, skip.Reason)
 			printErr = errors.Join(printErr, err)
 		}
+		printErr = errors.Join(printErr, printSkips(stdout, "scrollback not replayed", result.ScrollbackSkipped))
 		return errors.Join(restoreErr, printErr)
 	}
 	status, err := client.Status(ctx, *dir)
@@ -198,7 +237,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if jsonOutput {
 		return json.NewEncoder(stdout).Encode(status)
 	}
-	_, err = fmt.Fprintf(stdout, "Generation %d (last-known-good %d)\nServer %s\nHost %s, captured instance %s\nRex %s (%s)\n%d sessions, %d windows, %d blocks, %d unsupported\nJournal %s (instance %s)\n", status.Generation, status.LastKnownGood, status.Server, status.HostID, status.InstanceID, status.RexVersion, status.Commit, status.Sessions, status.Windows, status.Blocks, status.Unsupported, status.Journal.Outcome, status.Journal.InstanceID)
+	_, err = fmt.Fprintf(stdout, "Generation %d (last-known-good %d)\nServer %s\nHost %s, captured instance %s\nRex %s (%s)\n%d sessions, %d windows, %d blocks, %d unsupported\nRecovery: %s\n%s\nJournal %s (instance %s)\n", status.Generation, status.LastKnownGood, status.Server, status.HostID, status.InstanceID, status.RexVersion, status.Commit, status.Sessions, status.Windows, status.Blocks, status.Unsupported, recoveryText(status.Recovery), rexAPIText(status.RexAPI), status.Journal.Outcome, status.Journal.InstanceID)
 	for _, id := range status.Journal.MissingSessions {
 		_, printErr := fmt.Fprintf(stdout, "Missing completed session %s\n", id)
 		err = errors.Join(err, printErr)

@@ -3,12 +3,17 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/blacktop/rexurrect/internal/foreground"
+	"github.com/blacktop/rexurrect/internal/keychain/keychaintest"
+	"github.com/blacktop/rexurrect/internal/launchagent"
 	"github.com/blacktop/rexurrect/internal/rex"
 	"github.com/blacktop/rexurrect/internal/snapshot"
 	"github.com/blacktop/rexurrect/internal/state"
@@ -97,7 +102,7 @@ func TestStatusJSON(t *testing.T) {
 	if err := os.WriteFile(binary, []byte(`#!/bin/sh
 case "$6:$8" in
   whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"new-instance","rex_version":"version"}' ;;
-  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit","api_min_revision":3,"api_revision":7}' ;;
   api:session.list) printf '%s\n' '{"sessions":[]}' ;;
   *) exit 1 ;;
 esac
@@ -120,6 +125,12 @@ esac
 	var status rex.Status
 	if err := json.Unmarshal(out.Bytes(), &status); err != nil || status.Generation != 1 || status.HostID != "host" || status.InstanceID != "saved-instance" || strings.TrimSpace(diagnostic.String()) != "" {
 		t.Fatalf("JSON status: %s %v", out.String(), err)
+	}
+	if status.RexAPI != (rex.RexAPI{ServerAPIMinRevision: 3, ServerAPIRevision: 7}) || status.Recovery != (snapshot.Recovery{}) {
+		t.Fatalf("JSON status recovery fields: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"rex_api":{"server_api_min_revision":3,"server_api_revision":7}`) {
+		t.Fatalf("JSON status rex_api shape: %s", out.String())
 	}
 	s, err = state.Open(dir)
 	if err != nil {
@@ -151,7 +162,136 @@ esac
 		t.Fatalf("missing-session JSON status: %s %v", out.String(), err)
 	}
 	out.Reset()
-	if err := run(t.Context(), base, &out, &diagnostic); err != nil || !strings.Contains(out.String(), "Journal complete_missing") || !strings.Contains(out.String(), "Missing completed session missing-live-session\n") {
+	if err := run(t.Context(), base, &out, &diagnostic); err != nil || !strings.Contains(out.String(), "Journal complete_missing") || !strings.Contains(out.String(), "Missing completed session missing-live-session\n") ||
+		!strings.Contains(out.String(), "Recovery: 0 agents resume, 0 commands typed, 0 plain shells, 0 inert receipts\nRex API revision 7 (minimum 3)\n") {
 		t.Fatalf("missing-session text status: %s %v", out.String(), err)
+	}
+}
+
+// The human restore output names every block whose scrollback was not
+// replayed, and the CLI reaches the keychain only through the configured
+// security tool.
+func TestRestoreTextPrintsScrollbackSkips(t *testing.T) {
+	fake := keychaintest.New(t, rex.ScrollbackKeychainService)
+	t.Setenv("REXURRECT_SECURITY_TOOL", fake.Security)
+	root := t.TempDir()
+	dir, binary := filepath.Join(root, "state"), filepath.Join(root, "rex")
+	if err := os.WriteFile(binary, []byte(`#!/bin/sh
+case "$6:$8" in
+  whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"new-instance","rex_version":"version"}' ;;
+  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  *) exit 1 ;;
+esac
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := snapshot.SourceID("block:01234567-89ab-4cde-8fab-0123456789ab")
+	ref := snapshot.ScrollbackRef{KeyID: strings.Repeat("ab", 16), ObjectID: strings.Repeat("cd", 32)}
+	e := state.Envelope{CapturedAt: time.Now().UTC(), RexVersion: "version", Commit: "commit", HostID: "host", InstanceID: "saved-instance", Report: &snapshot.Report{},
+		Snapshot: snapshot.Snapshot{Version: snapshot.Version, Sessions: []snapshot.Session{{ID: "session:01234567-89ab-4cde-8fab-0123456789ab", ActiveWindow: "window",
+			Windows: []snapshot.Window{{ID: "window", LayerID: "layer", Focus: block, Layout: snapshot.Node{Block: &snapshot.Block{ID: block, CWD: "/", Scrollback: &ref}}}}}}}}
+	_, publishErr := s.Publish(e, false)
+	if err := errors.Join(publishErr, s.Close()); err != nil {
+		t.Fatal(err)
+	}
+	var out, diagnostic bytes.Buffer
+	if err := run(t.Context(), []string{"restore", "--server", "unix:///private/tmp/unused", "--state-dir", dir, "--rex", binary}, &out, &diagnostic); err == nil {
+		t.Fatal("restore succeeded against a Rex stub that cannot create sessions")
+	}
+	if want := "Block " + string(block) + ": scrollback not replayed (scrollback sidecar unreadable)\n"; !strings.Contains(out.String(), want) {
+		t.Fatalf("restore output lacks %q:\n%s", want, out.String())
+	}
+	if items, err := os.ReadDir(fake.Items); err != nil || len(items) != 1 {
+		t.Fatalf("restore did not provision through the substituted security tool: %v %v", items, err)
+	}
+}
+
+// The hook command prints the embedded recorder for a supported shell, so a
+// cask-installed binary needs no checkout.
+func TestHookCommand(t *testing.T) {
+	for _, shell := range []string{"zsh", "fish"} {
+		var out, diagnostic bytes.Buffer
+		if err := run(t.Context(), []string{"hook", shell}, &out, &diagnostic); err != nil {
+			t.Fatalf("hook %s: %v", shell, err)
+		}
+		want, err := foreground.Script(shell)
+		if err != nil || !bytes.Equal(out.Bytes(), want) || !bytes.Contains(out.Bytes(), []byte("RR_FOREGROUND")) {
+			t.Fatalf("hook %s output differs from the embedded script: %v", shell, err)
+		}
+	}
+	var lua bytes.Buffer
+	if err := run(t.Context(), []string{"hook", "lua"}, &lua, io.Discard); err != nil {
+		t.Fatalf("hook lua: %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(lua.Bytes(), []byte(`"`+executable+`", "agent", "wake"}, {detach = true}`)) || bytes.Contains(lua.Bytes(), []byte("--label")) {
+		t.Fatalf("hook lua output:\n%s", &lua)
+	}
+	lua.Reset()
+	if err := run(t.Context(), []string{"hook", "lua", "--label", "io.blacktop.rexurrect.test.hook", "--plist-dir", "/plists"}, &lua, io.Discard); err != nil || !bytes.Contains(lua.Bytes(), []byte(`"agent", "wake", "--label", "io.blacktop.rexurrect.test.hook", "--plist-dir", "/plists"}`)) {
+		t.Fatalf("hook lua with options: %v\n%s", err, &lua)
+	}
+	for _, args := range [][]string{{"hook"}, {"hook", "bash"}, {"hook", "zsh", "extra"}, {"hook", "lua", "extra"}, {"hook", "lua", "--plist-dir", "relative"}, {"hook", "lua", "--label", "bad label"}} {
+		var out, diagnostic bytes.Buffer
+		if err := run(t.Context(), args, &out, &diagnostic); err == nil || out.Len() != 0 {
+			t.Errorf("accepted %q", args)
+		}
+	}
+}
+
+// From a shell the parent is not a Rex server, so wake is a benign skip that
+// touches neither launchctl nor the server.
+func TestAgentWakeFromShellSkips(t *testing.T) {
+	var out bytes.Buffer
+	if err := run(t.Context(), []string{"agent", "wake", "--plist-dir", t.TempDir(), "--json"}, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var result launchagent.WakeResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.Outcome != "skipped" || !strings.Contains(result.Reason, "no owned LaunchAgent plist") || result.ParentPID != os.Getppid() {
+		t.Fatalf("wake from shell: %s %v", &out, err)
+	}
+	out.Reset()
+	if err := run(t.Context(), []string{"agent", "wake", "--plist-dir", t.TempDir()}, &out, io.Discard); err != nil || !strings.Contains(out.String(), "/io.blacktop.rexurrect: skipped (no owned LaunchAgent plist") {
+		t.Fatalf("wake text: %s %v", &out, err)
+	}
+}
+
+// A server from before the API range fields existed leaves both out, which
+// reports as 0 and 0 rather than failing.
+func TestStatusRexAPIOmitted(t *testing.T) {
+	root := t.TempDir()
+	dir, binary := filepath.Join(root, "state"), filepath.Join(root, "rex")
+	if err := os.WriteFile(binary, []byte(`#!/bin/sh
+case "$6:$8" in
+  whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"new-instance","rex_version":"version"}' ;;
+  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  *) exit 1 ;;
+esac
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, publishErr := s.Publish(state.Envelope{CapturedAt: time.Now().UTC(), RexVersion: "version", Commit: "commit", HostID: "host", InstanceID: "saved-instance", Snapshot: snapshot.Snapshot{Version: snapshot.Version}, Report: &snapshot.Report{}}, true)
+	if err := errors.Join(publishErr, s.Close()); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"status", "--server", "unix:///private/tmp/unused", "--state-dir", dir, "--rex", binary}
+	var out, diagnostic bytes.Buffer
+	if err := run(t.Context(), append(base, "--json"), &out, &diagnostic); err != nil || !strings.Contains(out.String(), `"rex_api":{"server_api_min_revision":0,"server_api_revision":0}`) {
+		t.Fatalf("omitted range JSON: %s %v", out.String(), err)
+	}
+	out.Reset()
+	if err := run(t.Context(), base, &out, &diagnostic); err != nil || !strings.Contains(out.String(), "Rex API revision 0 (minimum 0)\n") {
+		t.Fatalf("omitted range text: %s %v", out.String(), err)
 	}
 }

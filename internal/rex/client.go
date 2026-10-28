@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/blacktop/rexurrect/internal/keychain"
 	"io"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,10 @@ type Client struct {
 	Env         []string
 	CallTimeout time.Duration // Zero uses DefaultCallTimeout.
 	LockTimeout time.Duration // Receipt state-lock wait; zero uses DefaultLockTimeout.
+	// Scrollback enables encrypted scrollback capture during save. Keychain
+	// names the key store; its zero value uses the default service.
+	Scrollback bool
+	Keychain   keychain.Store
 }
 
 // SocketPath extracts the socket from an explicit unix:// endpoint argument.

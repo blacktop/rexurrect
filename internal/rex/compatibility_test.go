@@ -245,21 +245,30 @@ esac
 		if err != nil {
 			t.Fatal(err)
 		}
+		ref := snapshot.ScrollbackRef{KeyID: strings.Repeat("ab", 16), ObjectID: strings.Repeat("cd", 32)}
+		block := snapshot.SourceID(modern.BlockID)
 		e := state.Envelope{CapturedAt: time.Now().UTC(), RexVersion: "version", Commit: "commit", HostID: "host", InstanceID: "old-instance",
-			Snapshot: snapshot.Snapshot{Version: snapshot.Version, Sessions: []snapshot.Session{{ID: "source", Label: "new"}}}, Report: &snapshot.Report{}}
-		_, publishErr := store.Publish(e, false)
-		if err := errors.Join(publishErr, store.SetReceipt("host", modern), store.Close()); err != nil {
+			Snapshot: snapshot.Snapshot{Version: snapshot.Version, Sessions: []snapshot.Session{{ID: snapshot.SourceID(modern.SessionID), Label: "new", ActiveWindow: "window",
+				Windows: []snapshot.Window{{ID: "window", LayerID: "layer", Focus: block,
+					Layout: snapshot.Node{Block: &snapshot.Block{ID: block, CWD: "/", Scrollback: &ref}}}}}}}, Report: &snapshot.Report{}}
+		published, publishErr := store.Publish(e, false)
+		if err := errors.Join(publishErr, store.SetReceipt("host", modern), store.WriteScrollback(ref, []byte("ciphertext")), store.PinScrollback(published), store.Close()); err != nil {
 			t.Fatal(err)
 		}
 		before := savedFiles(t, dir)
+		// The strict decoder reports the first unknown field (the scrollback
+		// reference) or, without one, the unsupported snapshot version.
+		refused := func(out string) bool {
+			return strings.Contains(out, "unsupported snapshot version") || strings.Contains(out, `unknown field "scrollback"`)
+		}
 		for _, command := range []string{"status", "restore", "auto"} {
 			out, status := run(t, dir, command, "--json")
-			if status != 1 || !strings.Contains(out, "unsupported snapshot version") {
-				t.Errorf("released %s accepted a v3 generation: %d %s", command, status, out)
+			if status != 1 || !refused(out) {
+				t.Errorf("released %s accepted a v4 generation: %d %s", command, status, out)
 			}
 		}
 		// The released reader checks the current generation before the store.
-		if out, status := run(t, dir, "receipt", "list", "--json"); status != 1 || !strings.Contains(out, "unsupported snapshot version") {
+		if out, status := run(t, dir, "receipt", "list", "--json"); status != 1 || !refused(out) {
 			t.Errorf("released receipt list accepted upgraded state: %d %s", status, out)
 		}
 		if !maps.Equal(before, savedFiles(t, dir)) {

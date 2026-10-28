@@ -69,6 +69,14 @@ func TestLaunchAgentPlist(t *testing.T) {
 	if !slices.Equal(p["ProgramArguments"].Strings, want) || p["ProgramArguments"].XMLName.Local != "array" {
 		t.Fatalf("arguments: %#v", p["ProgramArguments"])
 	}
+	c.Scrollback = true
+	withScrollback, err := Render(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := parsePlist(withScrollback); err != nil || !slices.Equal(p["ProgramArguments"].Strings, append(slices.Clone(want), "--scrollback")) {
+		t.Fatalf("scrollback flag missing from the automatic cycle: %v %v", p["ProgramArguments"].Strings, err)
+	}
 	for key, want := range map[string]string{"Label": c.Label, "StartInterval": "60", "ProcessType": "Background", "StandardOutPath": filepath.Join(c.StateDir, autolog.OutName), "StandardErrorPath": filepath.Join(c.StateDir, autolog.ErrName)} {
 		if p[key].Text != want {
 			t.Errorf("%s = %q, want %q", key, p[key].Text, want)

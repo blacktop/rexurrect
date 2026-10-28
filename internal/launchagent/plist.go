@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"encoding/xml"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,6 +27,7 @@ type Config struct {
 	ResolvedRex                              string // Optional path already resolved by the command.
 	Interval, Wait, Timeout, CallTimeout     time.Duration
 	LogMaxBytes                              int64
+	Scrollback                               bool // Pass --scrollback to each automatic cycle.
 }
 
 func validLabel(label string) bool {
@@ -98,6 +101,9 @@ func Render(c Config) ([]byte, error) {
 		return errors.Join(enc.EncodeElement(key, xml.StartElement{Name: xml.Name{Local: "key"}}), encodePlistValue(enc, &b, plistValue{XMLName: xml.Name{Local: kind}, Text: value, Strings: items}))
 	}
 	args := []string{c.Executable, "auto", "--server", c.Server, "--state-dir", c.StateDir, "--rex", c.Rex, "--wait", c.Wait.String(), "--timeout", c.Timeout.String(), "--call-timeout", c.CallTimeout.String(), "--log-max-bytes", strconv.FormatInt(c.LogMaxBytes, 10)}
+	if c.Scrollback {
+		args = append(args, "--scrollback")
+	}
 	for _, e := range []struct{ key, kind, value string }{
 		{"Label", "string", c.Label},
 		{"RexResurrectManaged", "string", "1"},
@@ -152,4 +158,41 @@ func parsePlist(data []byte) (map[string]plistValue, error) {
 		values[key.Text] = items[i+1]
 	}
 	return values, nil
+}
+
+// parseConfig recovers the Config an owned plist was rendered from, so later
+// commands reuse the installed endpoint, Rex executable, and cycle settings
+// instead of asking for them again.
+func parseConfig(values map[string]plistValue) (Config, error) {
+	arguments := values["ProgramArguments"]
+	if arguments.XMLName.Local != "array" || len(arguments.Strings) < 2 || arguments.Strings[1] != "auto" {
+		return Config{}, errors.New("owned LaunchAgent plist has no auto ProgramArguments")
+	}
+	c := Config{Executable: arguments.Strings[0], Label: values["Label"].Text}
+	flags := flag.NewFlagSet("auto", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&c.Server, "server", "", "")
+	flags.StringVar(&c.StateDir, "state-dir", "", "")
+	flags.StringVar(&c.Rex, "rex", "", "")
+	flags.DurationVar(&c.Wait, "wait", 0, "")
+	flags.DurationVar(&c.Timeout, "timeout", 0, "")
+	flags.DurationVar(&c.CallTimeout, "call-timeout", 0, "")
+	flags.Int64Var(&c.LogMaxBytes, "log-max-bytes", 0, "")
+	flags.BoolVar(&c.Scrollback, "scrollback", false, "")
+	if err := flags.Parse(arguments.Strings[2:]); err != nil {
+		return Config{}, fmt.Errorf("owned LaunchAgent plist arguments: %w", err)
+	}
+	if flags.NArg() != 0 {
+		return Config{}, errors.New("owned LaunchAgent plist has unexpected positional arguments")
+	}
+	interval := values["StartInterval"]
+	seconds, err := strconv.ParseInt(interval.Text, 10, 64)
+	if err != nil || interval.XMLName.Local != "integer" {
+		return Config{}, errors.New("owned LaunchAgent plist has no StartInterval")
+	}
+	c.Interval = time.Duration(seconds) * time.Second
+	if err := c.validate(); err != nil {
+		return Config{}, fmt.Errorf("owned LaunchAgent plist: %w", err)
+	}
+	return c, nil
 }

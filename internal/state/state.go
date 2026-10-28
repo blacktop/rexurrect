@@ -24,6 +24,9 @@ import (
 const (
 	FormatVersion = 1
 	MaxFileSize   = 16 << 20
+	// tempPrefix names the temporary file a write creates beside its
+	// destination; the shell hooks use the same prefix, and pruning keys on it.
+	tempPrefix = ".tmp-"
 )
 
 var (
@@ -72,6 +75,22 @@ func (e Envelope) Validate() error {
 	}
 	if e.Snapshot.Version < 2 && e.Report.CWDSubstitutions != nil {
 		return errors.New("capture cwd substitutions require snapshot version 2")
+	}
+	if e.Snapshot.Version < 4 && e.Report.ScrollbackSkipped != nil {
+		return errors.New("scrollback skips require snapshot version 4")
+	}
+	if e.Snapshot.Version < 5 && e.Report.ForegroundSkipped != nil {
+		return errors.New("foreground skips require snapshot version 5")
+	}
+	for name, skips := range map[string][]snapshot.Skip{"scrollback": e.Report.ScrollbackSkipped, "foreground": e.Report.ForegroundSkipped} {
+		if len(skips) > len(ids) {
+			return fmt.Errorf("excessive %s skips", name)
+		}
+		for _, skip := range skips {
+			if ids[skip.BlockID] != "block" || !bounded(skip.Reason, 256) {
+				return fmt.Errorf("invalid %s skip", name)
+			}
+		}
 	}
 	// Match each substitution to the cwd actually stored for that block.
 	cwds := make(map[snapshot.SourceID]string)
@@ -149,15 +168,17 @@ func Open(dir string) (*Store, error) {
 	if dir == "" {
 		return nil, errors.New("state directory is required")
 	}
+	// Paths derived from the store are embedded in commands that run in
+	// other working directories, so the store is absolute by construction.
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve state directory: %w", err)
+	}
 	if err := makeDirectory(dir); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
-	info, err := os.Lstat(dir)
-	if err != nil {
+	if err := privateDirectory(dir, "state directory"); err != nil {
 		return nil, err
-	}
-	if !info.IsDir() || info.Mode().Perm() != 0700 {
-		return nil, errors.New("state directory must be a private directory (mode 0700)")
 	}
 	f, err := openFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR)
 	if err != nil {
@@ -170,6 +191,9 @@ func Open(dir string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.lock.Close() }
+
+// Dir is the state directory this store locks.
+func (s *Store) Dir() string { return s.dir }
 
 // OpenWait is the bounded lock acquisition path for short-lived receipt hooks.
 // Save, restore, and auto retain Open's nonblocking exclusion behavior.
@@ -219,6 +243,47 @@ func makeDirectory(dir string) error {
 	return nil
 }
 
+// privateDirectory requires path to be a real directory with mode 0700. Lstat
+// never follows a symlink, so nothing written beneath a checked path can leave
+// the state directory.
+func privateDirectory(path, name string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0700 {
+		return fmt.Errorf("%s must be a private directory (mode 0700)", name)
+	}
+	return nil
+}
+
+// optionalPrivateDir resolves the state subdirectory name: absent is not an
+// error, present must be a private real directory.
+func (s *Store) optionalPrivateDir(name string) (string, bool, error) {
+	path := filepath.Join(s.dir, name)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return path, false, nil
+	}
+	return path, true, privateDirectory(path, name)
+}
+
+// subdirectory creates the nested directory named by parts under the state
+// directory, checking each component in turn so a planted symlink is refused
+// before anything is created or written below it.
+func (s *Store) subdirectory(parts ...string) (string, error) {
+	path, name := s.dir, ""
+	for _, part := range parts {
+		path, name = filepath.Join(path, part), filepath.Join(name, part)
+		if err := makeDirectory(path); err != nil {
+			return "", err
+		}
+		if err := privateDirectory(path, name); err != nil {
+			return "", err
+		}
+	}
+	return path, nil
+}
+
 func syncDirectory(path string) error {
 	dir, err := os.Open(path)
 	if err != nil {
@@ -245,16 +310,29 @@ func openFile(path string, flags int) (*os.File, error) {
 func generationName(n uint64) string { return fmt.Sprintf("generation-%020d.json", n) }
 
 func (s *Store) read(name string, limit int64, value any) error {
-	f, err := openFile(filepath.Join(s.dir, name), os.O_RDONLY)
+	return readJSON(filepath.Join(s.dir, name), name, limit, value)
+}
+
+// readBounded reads a private regular file of at most limit bytes.
+func readBounded(path, name string, limit int64) ([]byte, error) {
+	f, err := openFile(path, os.O_RDONLY)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", name, err)
+		return nil, fmt.Errorf("open %s: %w", name, err)
 	}
 	data, readErr := io.ReadAll(io.LimitReader(f, limit+1))
 	if err := errors.Join(readErr, f.Close()); err != nil {
-		return fmt.Errorf("read %s: %w", name, err)
+		return nil, fmt.Errorf("read %s: %w", name, err)
 	}
 	if int64(len(data)) > limit {
-		return fmt.Errorf("%s exceeds %d-byte size limit", name, limit)
+		return nil, fmt.Errorf("%s exceeds %d-byte size limit", name, limit)
+	}
+	return data, nil
+}
+
+func readJSON(path, name string, limit int64, value any) error {
+	data, err := readBounded(path, name, limit)
+	if err != nil {
+		return err
 	}
 	if err := rejectDuplicateMembers(data); err != nil {
 		return fmt.Errorf("decode %s: %w", name, err)
@@ -310,6 +388,24 @@ func (s *Store) LoadCurrent() (Current, error) {
 	return current, nil
 }
 
+// PublishGuards reports the predictable reasons Publish would refuse e over
+// current: an exhausted generation counter, a different Rex host, or an empty
+// snapshot over a nonempty history without allowEmpty. Callers with optional
+// side effects run it before them, on the Current they already hold.
+func PublishGuards(current Current, e Envelope, allowEmpty bool) error {
+	previous := current.Envelope.Generation
+	if previous == math.MaxUint64 {
+		return errors.New("generation number exhausted")
+	}
+	if previous != 0 && current.Envelope.HostID != e.HostID {
+		return errors.New("state belongs to a different Rex host")
+	}
+	if !allowEmpty && len(e.Snapshot.Sessions) == 0 && (len(current.Envelope.Snapshot.Sessions) != 0 || current.LastKnownGood != nil && len(current.LastKnownGood.Snapshot.Sessions) != 0) {
+		return errors.New("refusing empty snapshot over nonempty last-known-good; use --allow-empty")
+	}
+	return nil
+}
+
 // Publish validates before writing anything. A single pointer rename commits
 // the new generation and the previous, validated generation together. Older
 // committed generations are pruned only after the pointer is durable.
@@ -318,16 +414,10 @@ func (s *Store) Publish(e Envelope, allowEmpty bool) (Envelope, error) {
 	if err != nil && !errors.Is(err, ErrNoCurrent) {
 		return Envelope{}, err
 	}
+	if err := PublishGuards(current, e, allowEmpty); err != nil {
+		return Envelope{}, err
+	}
 	previous := current.Envelope.Generation
-	if previous == math.MaxUint64 {
-		return Envelope{}, errors.New("generation number exhausted")
-	}
-	if previous != 0 && current.Envelope.HostID != e.HostID {
-		return Envelope{}, errors.New("state belongs to a different Rex host")
-	}
-	if !allowEmpty && len(e.Snapshot.Sessions) == 0 && (len(current.Envelope.Snapshot.Sessions) != 0 || current.LastKnownGood != nil && len(current.LastKnownGood.Snapshot.Sessions) != 0) {
-		return Envelope{}, errors.New("refusing empty snapshot over nonempty last-known-good; use --allow-empty")
-	}
 	e.FormatVersion, e.Generation = FormatVersion, previous+1
 	if e.Snapshot.Version != snapshot.Version {
 		// Validate the old schema before upgrading the version we publish.
@@ -404,8 +494,15 @@ func (s *Store) write(name string, value any) error {
 	if len(data) >= MaxFileSize {
 		return fmt.Errorf("%s exceeds %d-byte size limit", name, MaxFileSize)
 	}
-	data = append(data, '\n')
-	f, err := os.CreateTemp(s.dir, ".tmp-*")
+	return publishFile(filepath.Join(s.dir, name), name, append(data, '\n'))
+}
+
+// publishFile publishes data at target through a private temporary file beside
+// it, fsyncs the file and then the directory, so a nested record is durable
+// where it lives before the caller's next side effect.
+func publishFile(target, name string, data []byte) error {
+	dir := filepath.Dir(target)
+	f, err := os.CreateTemp(dir, tempPrefix+"*")
 	if err != nil {
 		return err
 	}
@@ -417,8 +514,8 @@ func (s *Store) write(name string, value any) error {
 	if err = errors.Join(err, f.Close()); err != nil {
 		return fmt.Errorf("write %s: %w", name, err)
 	}
-	if err := os.Rename(temp, filepath.Join(s.dir, name)); err != nil {
+	if err := os.Rename(temp, target); err != nil {
 		return fmt.Errorf("publish %s: %w", name, err)
 	}
-	return syncDirectory(s.dir)
+	return syncDirectory(dir)
 }

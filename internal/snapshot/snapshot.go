@@ -2,18 +2,28 @@
 package snapshot
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/blacktop/rexurrect/internal/receipt"
+	"github.com/blacktop/rexurrect/internal/scrollback"
 )
 
-// Version 2 added agent receipts; version 3 added their host and command form.
-const Version = 3
+// Version 2 added agent receipts; version 3 added their host and command form;
+// version 4 added encrypted scrollback references; version 5 added recorded
+// foreground commands.
+const Version = 5
+
+// MaxForeground bounds a recorded foreground command line in bytes.
+const MaxForeground = 1024
 
 type SourceID string
 type LiveID string
@@ -50,6 +60,56 @@ type Block struct {
 	Label       string           `json:"label"`
 	CWD         string           `json:"cwd"`
 	AgentResume *receipt.Receipt `json:"agent_resume,omitempty"`
+	Scrollback  *ScrollbackRef   `json:"scrollback,omitempty"`
+	// Foreground is the command line the pane was running when it was saved,
+	// as the user typed it. Restore types it at the new prompt and never runs
+	// it; a receipt takes precedence.
+	Foreground string `json:"foreground,omitempty"`
+}
+
+// ValidForeground accepts one trimmed line of printable UTF-8 of at most
+// MaxForeground bytes. A control, format, or other non-printable code point
+// could execute or corrupt the typed text, so none is allowed, including the
+// newline that would run it.
+func ValidForeground(command string) error {
+	if command == "" || len(command) > MaxForeground {
+		return fmt.Errorf("foreground command must be 1 to %d bytes", MaxForeground)
+	}
+	if !utf8.ValidString(command) {
+		return errors.New("foreground command is not valid UTF-8")
+	}
+	if strings.TrimSpace(command) != command {
+		return errors.New("foreground command has leading or trailing whitespace")
+	}
+	for _, r := range command {
+		if !unicode.IsPrint(r) {
+			return errors.New("foreground command contains a non-printable character")
+		}
+	}
+	return nil
+}
+
+// ScrollbackRef names the encrypted scrollback sidecar saved for a block: the
+// key that sealed it and its keyed content identity. The sidecar itself lives
+// outside the generation file.
+type ScrollbackRef struct {
+	KeyID    string `json:"key_id"`
+	ObjectID string `json:"object_id"`
+}
+
+// Parse decodes both identifiers; Validate is the check alone.
+func (r ScrollbackRef) Parse() (scrollback.KeyID, scrollback.ObjectID, error) {
+	keyID, err := scrollback.ParseKeyID(r.KeyID)
+	if err != nil {
+		return keyID, scrollback.ObjectID{}, err
+	}
+	objectID, err := scrollback.ParseObjectID(r.ObjectID)
+	return keyID, objectID, err
+}
+
+func (r ScrollbackRef) Validate() error {
+	_, _, err := r.Parse()
+	return err
 }
 
 type Split struct {
@@ -71,9 +131,19 @@ type Unsupported struct {
 }
 
 type Report struct {
-	Unsupported      []Unsupported     `json:"unsupported,omitempty"`
-	PrunedReceipts   []SourceID        `json:"pruned_receipts,omitempty"`
-	CWDSubstitutions []CWDSubstitution `json:"cwd_substitutions,omitempty"`
+	Unsupported       []Unsupported     `json:"unsupported,omitempty"`
+	PrunedReceipts    []SourceID        `json:"pruned_receipts,omitempty"`
+	CWDSubstitutions  []CWDSubstitution `json:"cwd_substitutions,omitempty"`
+	ScrollbackSkipped []Skip            `json:"scrollback_skipped,omitempty"`
+	ForegroundSkipped []Skip            `json:"foreground_skipped,omitempty"`
+}
+
+// Skip records a shell block that an optional feature (scrollback, foreground
+// command) deliberately left out, and why; its layout, cwd, and receipt are
+// unaffected.
+type Skip struct {
+	BlockID SourceID `json:"block_source_id"`
+	Reason  string   `json:"reason"`
 }
 
 // CWDSubstitution records a capture that used home because the terminal had
@@ -152,6 +222,22 @@ func (s Snapshot) Inventory() (map[SourceID]string, error) {
 						}
 						if err := r.ValidateMetadata(); err != nil || r.SessionID != string(session.ID) || r.BlockID != string(b.ID) {
 							return fmt.Errorf("invalid agent receipt for block %s: %v", b.ID, err)
+						}
+					}
+					if ref := b.Scrollback; ref != nil {
+						if s.Version < 4 {
+							return fmt.Errorf("scrollback references require snapshot version 4")
+						}
+						if err := ref.Validate(); err != nil {
+							return fmt.Errorf("invalid scrollback reference for block %s: %w", b.ID, err)
+						}
+					}
+					if b.Foreground != "" {
+						if s.Version < 5 {
+							return fmt.Errorf("foreground commands require snapshot version 5")
+						}
+						if err := ValidForeground(b.Foreground); err != nil {
+							return fmt.Errorf("invalid foreground command for block %s: %w", b.ID, err)
 						}
 					}
 					if !filepath.IsAbs(b.CWD) || len(b.CWD) > 4096 || len(b.Label) > 4096 {
@@ -263,8 +349,11 @@ func normalize(s Snapshot, translate func(SourceID) SourceID) (Snapshot, error) 
 		if n.Block != nil {
 			b := *n.Block
 			b.ID = translate(b.ID)
-			// Receipts are opt-in replay metadata, not observable Rex topology.
+			// Receipts, scrollback, and foreground commands are replay
+			// metadata, not observable Rex topology.
 			b.AgentResume = nil
+			b.Scrollback = nil
+			b.Foreground = ""
 			var err error
 			b.CWD, err = CanonicalCWD(b.CWD)
 			return Node{Block: &b}, err
@@ -297,4 +386,56 @@ func normalize(s Snapshot, translate func(SourceID) SourceID) (Snapshot, error) 
 		out.Sessions = append(out.Sessions, copy)
 	}
 	return out, nil
+}
+
+// Blocks returns every shell block of every session, in order. As with
+// Session.Blocks, the pointers alias the snapshot.
+func (s Snapshot) Blocks() []*Block {
+	var blocks []*Block
+	for _, session := range s.Sessions {
+		blocks = append(blocks, session.Blocks()...)
+	}
+	return blocks
+}
+
+// InitialInput is what a restore types into b: the receipt's resume command,
+// which runs, else the recorded foreground command, typed and never run. A
+// receipt decides even when it produces no input.
+func (b Block) InitialInput() string {
+	if b.AgentResume != nil {
+		return b.AgentResume.InitialInput()
+	}
+	return b.Foreground
+}
+
+// Recovery counts what a restore of s does with each shell block.
+type Recovery struct {
+	// Agents are blocks whose receipt produces a resume command that runs.
+	Agents int `json:"agents"`
+	// Typed are blocks whose recorded foreground command is typed, never run.
+	Typed int `json:"typed"`
+	// Plain are shells that get no input.
+	Plain int `json:"plain"`
+	// Inert are blocks whose receipt produces no input by policy, such as a
+	// legacy harness that never resumes.
+	Inert int `json:"inert"`
+}
+
+// Recovery classifies every shell block of s.
+func (s Snapshot) Recovery() Recovery {
+	var r Recovery
+	for _, b := range s.Blocks() {
+		input := b.InitialInput()
+		switch {
+		case b.AgentResume != nil && input != "":
+			r.Agents++
+		case b.AgentResume != nil:
+			r.Inert++
+		case input != "":
+			r.Typed++
+		default:
+			r.Plain++
+		}
+	}
+	return r
 }

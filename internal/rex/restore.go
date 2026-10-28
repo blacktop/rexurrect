@@ -48,10 +48,14 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 		return out, err
 	}
 	out = j.Status(e)
+	var scrollbackSkipped []snapshot.Skip
+	var recovery snapshot.Recovery
 	defer func() {
 		acknowledged := out.IDMap
 		out = j.Status(e)
 		maps.Copy(out.IDMap, acknowledged)
+		out.ScrollbackSkipped = scrollbackSkipped
+		out.Recovery = recovery
 	}()
 
 	latest := j.Latest()
@@ -95,6 +99,19 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	if err := c.checkInstance(ctx, target); err != nil {
 		return out, err
 	}
+	// Scrollback replay is decided once, before any create, so a lost
+	// acknowledgement can never start a second replay for the same block. Only
+	// the sessions this invocation creates take part: completed and in-flight
+	// sessions keep their earlier decision and are neither re-pinned nor
+	// reported again.
+	starts := startCommands{typed: typedStart()}
+	if creating := creatingSessions(e, latest); len(creating.Snapshot.Sessions) != 0 {
+		recovery = creating.Snapshot.Recovery()
+		starts.replay, scrollbackSkipped, err = c.scrollbackReplay(ctx, store, creating)
+		if err != nil {
+			return out, err
+		}
+	}
 	for _, session := range e.Snapshot.Sessions {
 		r := latest[session.ID]
 		if r.Outcome == "complete" {
@@ -120,7 +137,7 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 			if err := c.checkInstance(ctx, target); err != nil {
 				return out, err
 			}
-			created, createErr := c.createSession(ctx, session, r.Marker)
+			created, createErr := c.createSession(ctx, session, r.Marker, starts)
 			if createErr != nil {
 				recordErr := store.Record(e, &j, session.ID, r.Marker, "uncertain", nil)
 				return out, errors.Join(fmt.Errorf("session.create outcome is uncertain; restore again to read back marker %s: %w", r.Marker, createErr), recordErr)
@@ -238,6 +255,15 @@ func restoreSessionCWD(session snapshot.Session, recorded map[snapshot.SourceID]
 		session.Windows[i].Layout = layout
 	}
 	return session, substitutions, nil
+}
+
+// creatingSessions is e restricted to the sessions a restore has not yet
+// attempted, the only ones whose blocks can start with a replay command.
+func creatingSessions(e state.Envelope, latest map[snapshot.SourceID]state.JournalRecord) state.Envelope {
+	e.Snapshot.Sessions = slices.DeleteFunc(slices.Clone(e.Snapshot.Sessions), func(session snapshot.Session) bool {
+		return latest[session.ID].Outcome != ""
+	})
+	return e
 }
 
 func (c Client) checkInstance(ctx context.Context, want serverIdentity) error {

@@ -8,7 +8,9 @@ including tabs, splits, and working directories. The optional agent plugin also
 resumes registered Claude Code and Codex conversations.
 
 The project is experimental. Terminals without an agent receipt come back as
-ordinary shells. Arbitrary running commands and scrollback aren't restored.
+ordinary shells. With the optional shell hook, the command a pane was running
+is typed back at its prompt (never run); with `--scrollback`, its earlier
+output is replayed above the prompt.
 
 ## Install
 
@@ -54,6 +56,40 @@ then follow the [receipt checks](plugins/rexurrect/README.md#check-the-result).
 The wrapper identifies which account owns the pane, so installing the plugin
 alone isn't enough. Codex runs with `--no-daemon` inside Rex so its hooks follow
 the pane's lifetime.
+
+## Scrollback
+
+`save --scrollback` and `auto --scrollback` also bring back each pane's earlier
+output above its new prompt. It is off by default. The output is encrypted
+before it reaches disk; the key lives in your login keychain, so a copied state
+directory or a backup holds no readable terminal output, and a missing key
+only costs the scrollback, never the layout or agent recovery. Full-screen
+programs are skipped. Turn it on for the automatic job with
+`rexurrect agent install --scrollback` (same `--server` and `--state-dir` as
+before), or run `rexurrect save --scrollback` yourself; see
+[Encrypted scrollback](docs/compatibility.md#encrypted-scrollback-s4).
+
+## Running commands
+
+Add `eval "$(rexurrect hook zsh)"` to `~/.zshrc`, or
+`rexurrect hook fish | source` to `~/.config/fish/config.fish`.
+While a command runs in a pane, the hook records the line you typed; when it
+exits, the record goes away. After a restart, a pane that was running
+something comes back with that line typed at its prompt, ready for Enter and
+never run on its own. Agent panes still resume through their receipts. See
+[Foreground commands](docs/compatibility.md#foreground-commands-s5).
+
+## Waking the job when Rex starts
+
+The job already responds when the Rex socket appears or disappears. To wake
+it from Rex's own startup as well, add the output of `rexurrect hook lua` to
+`~/.config/rex/init.lua`. When Rex loads that file it starts
+`rexurrect agent wake` detached; wake kicks the installed job only after
+confirming that the process which started it is the configured Rex server, so
+`rex config check` or running it from a shell does nothing. Reloading the
+configured server can wake a harmless same-instance cycle.
+A disabled or uninstalled job is left alone. Remove the lines to turn it off.
+See [Startup trigger](docs/compatibility.md#startup-trigger-initlua).
 
 ## Usage
 

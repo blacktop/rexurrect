@@ -2,6 +2,8 @@ package rex
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,28 +11,48 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/blacktop/rexurrect/internal/keychain/keychaintest"
 	"github.com/blacktop/rexurrect/internal/snapshot"
 	"github.com/blacktop/rexurrect/internal/state"
 )
 
+// savedFiles maps every state file, by path relative to dir, to its content,
+// and fails on anything that is not a private file (0600) or directory (0700).
 func savedFiles(t *testing.T, dir string) map[string]string {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
+	out := make(map[string]string)
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != dir && info.Mode().Perm() != 0700 {
+				t.Fatalf("private directory %s: %v", path, info.Mode())
+			}
+			return nil
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("private file %s: %v", path, info.Mode())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		name, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		out[name] = string(data)
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	out := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil || info.Mode().Perm() != 0600 {
-			t.Fatalf("private file %s: %v %v", entry.Name(), info, err)
-		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		out[entry.Name()] = string(data)
 	}
 	return out
 }
@@ -152,6 +174,52 @@ func TestSaveStatusPrivateServer(t *testing.T) {
 		t.Fatalf("explicit empty save lost last good: %+v", current)
 	}
 	t.Logf("published generations 1, 2, and explicit empty 3; %d sessions, %d windows, %d blocks, %d unsupported", status.Sessions, status.Windows, status.Blocks, status.Unsupported)
+}
+
+func TestSaveScrollbackGuardsBeforeCapturePrivateServer(t *testing.T) {
+	fake := keychaintest.New(t, ScrollbackKeychainService)
+	s := newIsolatedServer(t)
+	mustCall(t, s.client, "session.create", map[string]any{"initial_windows": []createWindow{{
+		Layout: createNode{Block: &createBlock{Flavor: shellFlavor,
+			Options: shellOptions{Shell: "/bin/sh", Login: new(bool), CWD: s.root}}},
+	}}}, nil)
+	captured, _, err := s.client.stableCapture(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.Snapshot.Sessions) != 1 || len(captured.Snapshot.Sessions[0].Blocks()) != 1 {
+		t.Fatalf("capture has no shell block: %+v", captured.Snapshot)
+	}
+	captured.HostID = "other-" + captured.HostID
+	dir := filepath.Join(s.root, "saved")
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, publishErr := store.Publish(captured, false)
+	if err := errors.Join(publishErr, store.Close()); err != nil {
+		t.Fatal(err)
+	}
+	// A stale foreground record is pruned only by an accepted save.
+	writeForeground(t, dir, "block:ffffffff-89ab-4cde-8fab-0123456789ab", "vim", 2*time.Minute)
+	before := savedFiles(t, dir)
+	if _, exists := before["receipts.json"]; exists {
+		t.Fatal("fixture must have no receipt store")
+	}
+	c := s.client
+	c.Scrollback, c.Keychain = true, fake.Store
+	if saved, err := c.Save(t.Context(), dir, false); err == nil || !strings.Contains(err.Error(), "different Rex host") || saved.Generation != 0 {
+		t.Fatalf("wrong-host save: %+v %v", saved, err)
+	}
+	if !reflect.DeepEqual(savedFiles(t, dir), before) {
+		t.Error("refused save changed the state directory")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "scrollback")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("refused save created scrollback state: %v", err)
+	}
+	if items, err := os.ReadDir(fake.Items); err != nil || len(items) != 0 {
+		t.Errorf("refused save provisioned a key: %v %v", items, err)
+	}
 }
 
 func TestSaveRetriesStructuralRevision(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -293,5 +294,33 @@ func TestEmptyAndHostGuards(t *testing.T) {
 	}
 	if _, err := s.Publish(empty, false); err == nil || !strings.Contains(err.Error(), "--allow-empty") {
 		t.Fatalf("empty save discarded nonempty last-known-good: %v", err)
+	}
+}
+
+func TestPublishGuards(t *testing.T) {
+	if err := PublishGuards(Current{}, fixture(), false); err != nil {
+		t.Fatalf("empty store: %v", err)
+	}
+	current := Current{Envelope: fixture()}
+	other := fixture()
+	other.HostID = "other-host"
+	if err := PublishGuards(current, other, false); err == nil || !strings.Contains(err.Error(), "different Rex host") {
+		t.Fatalf("other host: %v", err)
+	}
+	empty := fixture()
+	empty.Snapshot.Sessions = nil
+	if err := PublishGuards(current, empty, false); err == nil || !strings.Contains(err.Error(), "--allow-empty") {
+		t.Fatalf("empty over nonempty: %v", err)
+	}
+	if err := PublishGuards(current, empty, true); err != nil {
+		t.Fatalf("allowed empty: %v", err)
+	}
+	if err := PublishGuards(current, fixture(), false); err != nil {
+		t.Fatalf("same host: %v", err)
+	}
+	exhausted := current
+	exhausted.Envelope.Generation = math.MaxUint64
+	if err := PublishGuards(exhausted, fixture(), false); err == nil {
+		t.Fatal("exhausted generation accepted")
 	}
 }

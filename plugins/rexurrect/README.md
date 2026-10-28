@@ -164,6 +164,15 @@ still waiting for the receipt lock and clears the receipt; the launcher clears
 again after omp exits if that was missed. After a restart, rexurrect types
 `omp --resume <session-id>`.
 
+## Record running commands
+
+Independently of the agent hooks, the binary's own recorder (`eval
+"$(rexurrect hook zsh)"` in `~/.zshrc`, or `rexurrect hook fish | source` in
+`config.fish`) records the command a pane is running so a restart brings it
+back typed at the prompt, never executed. It needs no plugin trust and no Rex
+call; see
+[Foreground commands](../../docs/compatibility.md#foreground-commands-s5).
+
 ## Check the result
 
 Run the packaged `setup` skill for a guided installation or the `status` skill
