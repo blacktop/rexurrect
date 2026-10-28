@@ -4,7 +4,9 @@
 package keychaintest
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -51,7 +53,23 @@ func New(t testing.TB, service string) Fake {
 		t.Fatal(err)
 	}
 	t.Setenv("RR_ITEMS", items)
+	Warm(t, path)
 	return Fake{Store: keychain.Store{Service: service, Security: path, Timeout: 300 * time.Millisecond}, Items: items}
+}
+
+// Warm runs a freshly written fake once with a harmless environment: macOS
+// checks a new executable on its first launch, which alone can exceed the
+// store's deadline, and that latency must not count as a keychain hang.
+func Warm(t testing.TB, path string) {
+	t.Helper()
+	cmd := exec.Command(path)
+	cmd.Env = []string{"RR_ITEMS=/dev/null", "RR_ARGV=/dev/null", "RR_STDIN=/dev/null"}
+	if _, err := cmd.CombinedOutput(); err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("warm fake security: %v", err)
+		}
+	}
 }
 
 // Remove deletes the item for keyID, simulating a key lost from the keychain.

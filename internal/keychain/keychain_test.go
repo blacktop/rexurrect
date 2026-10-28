@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,6 +41,13 @@ esac
 	}
 	t.Setenv("RR_ARGV", argvPath)
 	t.Setenv("RR_STDIN", stdinPath)
+	// macOS checks a new executable on its first launch, which alone can
+	// exceed the deadline; one warm run keeps that out of the timing.
+	warm := exec.Command(path)
+	warm.Env = []string{"RR_ARGV=/dev/null", "RR_STDIN=/dev/null"}
+	if _, err := warm.CombinedOutput(); err != nil {
+		t.Fatalf("warm fake security: %v", err)
+	}
 	return Store{Service: testService, Security: path, Timeout: 300 * time.Millisecond}, argvPath, stdinPath
 }
 
