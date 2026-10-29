@@ -1,16 +1,17 @@
 #!/bin/sh
 # rexurrect-launch HOST COMMAND [ARGUMENTS...]
 #
-# Runs codex or claude (HOST) under the command name you typed (COMMAND) so the
-# rexurrect plugin hooks can register the conversation against this Rex pane
+# Runs codex, claude, or omp (HOST) under the command name you typed (COMMAND)
+# so the rexurrect plugin can register the conversation against this Rex pane
 # and clear it again when the agent exits. The behaviour is documented in the
-# plugin README; the summary is: ownership markers RR_HOST and RR_HARNESS go to
-# the agent, nested or foreign launches get blank markers, Codex runs with
-# --no-daemon inside Rex, and the pane's receipt is cleared after exit.
+# plugin README; the summary is: ownership markers RR_HOST, RR_HARNESS, and the
+# launcher's pid RR_LAUNCHER_PID go to the agent, nested or foreign launches
+# get blank markers, Codex runs with --no-daemon inside Rex, and the pane's
+# receipt is cleared after exit.
 set -eu
 
 rr_usage() {
-	printf 'usage: rexurrect-launch codex|claude COMMAND [ARGUMENTS...]\n' >&2
+	printf 'usage: rexurrect-launch codex|claude|omp COMMAND [ARGUMENTS...]\n' >&2
 	exit 2
 }
 
@@ -21,6 +22,7 @@ shift 2
 case "$rr_host" in
 codex) rr_agent=${REXURRECT_CODEX:-codex} ;;
 claude) rr_agent=${REXURRECT_CLAUDE:-claude} ;;
+omp) rr_agent=${REXURRECT_OMP:-omp} ;;
 *) rr_usage ;;
 esac
 [ -n "$rr_command" ] || rr_usage
@@ -47,13 +49,13 @@ rr_subcommand() {
 	done
 }
 
-# Any preset marker means a launcher or an agent session is above us; agent
-# tool shells carry CLAUDECODE or CODEX_THREAD_ID even when the markers were
-# filtered out. Those launches, launches outside a Rex pane, and the Codex
-# subcommands that exist to talk to the shared daemon run plainly with blank
-# markers, so hooks leave the enclosing pane's receipt alone.
+# Any preset marker means a launcher or an agent session is above us;
+# Claude and Codex tool shells carry CLAUDECODE or CODEX_THREAD_ID even when the
+# markers were filtered out. Those launches, launches outside a Rex pane, and
+# the Codex subcommands that exist to talk to the shared daemon run plainly
+# with blank markers, so hooks leave the enclosing pane's receipt alone.
 rr_plain=0
-[ -z "${RR_HARNESS+set}${RR_HOST+set}${CLAUDECODE:-}${CODEX_THREAD_ID:-}" ] || rr_plain=1
+[ -z "${RR_HARNESS+set}${RR_HOST+set}${RR_LAUNCHER_PID+set}${CLAUDECODE:-}${CODEX_THREAD_ID:-}" ] || rr_plain=1
 [ -n "${REX_SESSION:-}" ] && [ -n "${REX_BLOCK:-}" ] || rr_plain=1
 if [ "$rr_host" = codex ]; then
 	case "$(rr_subcommand "$@")" in
@@ -61,7 +63,7 @@ if [ "$rr_host" = codex ]; then
 	esac
 fi
 if [ "$rr_plain" = 1 ]; then
-	export RR_HARNESS='' RR_HOST=''
+	export RR_HARNESS='' RR_HOST='' RR_LAUNCHER_PID=''
 	exec "$rr_agent" "$@"
 fi
 
@@ -84,7 +86,7 @@ fi
 
 # Hook payloads omit the effort, and Claude's may omit the model, so record
 # the launch arguments as defaults. Claude uses --model/--effort; Codex uses
-# -m/--model and -c model_reasoning_effort=VALUE.
+# -m/--model and -c model_reasoning_effort=VALUE. The omp extension ignores both.
 rr_model=${RR_MODEL:-}
 rr_effort=${RR_EFFORT:-}
 rr_pending=
@@ -116,7 +118,7 @@ done
 rr_server=${REXURRECT_SERVER:-"unix://$HOME/Library/Application Support/rex/server.sock"}
 rr_state=${REXURRECT_STATE_DIR:-"$HOME/Library/Application Support/rexurrect"}
 rr_status=0
-RR_HOST=$rr_host RR_HARNESS=$rr_command RR_MODEL=$rr_model RR_EFFORT=$rr_effort \
+RR_HOST=$rr_host RR_HARNESS=$rr_command RR_LAUNCHER_PID=$$ RR_MODEL=$rr_model RR_EFFORT=$rr_effort \
 	REXURRECT_SERVER=$rr_server REXURRECT_STATE_DIR=$rr_state \
 	"$rr_agent" "$@" || rr_status=$?
 
