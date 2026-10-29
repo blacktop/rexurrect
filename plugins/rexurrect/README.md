@@ -92,8 +92,8 @@ What the launcher does:
   `RR_LAUNCHER_PID` (its own pid, so the agent can tell that it is the
   launcher's direct child) to the agent so the hooks can prove which pane owns
   the conversation. Any marker already present, even empty, means a launcher or
-  agent session is above this one; so does `CLAUDECODE`, `CODEX_THREAD_ID`, or
-  `OMPCODE`, which Claude Code, Codex, and omp put in their tool shells. Such
+  agent session is above this one. Claude Code and Codex also identify their
+  tool shells with `CLAUDECODE` and `CODEX_THREAD_ID`. Such
   launches and launches outside a Rex pane run the agent directly with all
   markers blank.
 - Inside Rex, starts Codex with `--no-daemon`. The shared Codex app-server

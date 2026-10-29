@@ -49,13 +49,13 @@ rr_subcommand() {
 	done
 }
 
-# Any preset marker means a launcher or an agent session is above us; agent
-# tool shells carry CLAUDECODE, CODEX_THREAD_ID, or (omp) OMPCODE even when the
+# Any preset marker means a launcher or an agent session is above us;
+# Claude and Codex tool shells carry CLAUDECODE or CODEX_THREAD_ID even when the
 # markers were filtered out. Those launches, launches outside a Rex pane, and
 # the Codex subcommands that exist to talk to the shared daemon run plainly
 # with blank markers, so hooks leave the enclosing pane's receipt alone.
 rr_plain=0
-[ -z "${RR_HARNESS+set}${RR_HOST+set}${RR_LAUNCHER_PID+set}${CLAUDECODE:-}${CODEX_THREAD_ID:-}${OMPCODE:-}" ] || rr_plain=1
+[ -z "${RR_HARNESS+set}${RR_HOST+set}${RR_LAUNCHER_PID+set}${CLAUDECODE:-}${CODEX_THREAD_ID:-}" ] || rr_plain=1
 [ -n "${REX_SESSION:-}" ] && [ -n "${REX_BLOCK:-}" ] || rr_plain=1
 if [ "$rr_host" = codex ]; then
 	case "$(rr_subcommand "$@")" in

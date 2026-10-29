@@ -522,8 +522,7 @@ func ownedOmp(name string, args []string) launchCase {
 	return launchCase{name: name, host: "omp", command: "omp", args: args, owner: "omp"}
 }
 
-// plainOmp is a launch that must not own the pane: omp's tool shells carry
-// OMPCODE and CLAUDECODE, so a nested launch sees them.
+// plainOmp is a launch that must not own the pane.
 func plainOmp(name string, env ...string) launchCase {
 	return launchCase{name: name, host: "omp", command: "omp", args: ompArgs, env: env,
 		agent: 7, clear: 9, want: 7}
@@ -559,7 +558,7 @@ func TestPluginShellHelpers(t *testing.T) {
 		plainCodex("daemon-subcommand-remote-control", []string{"--enable", "x", "remote-control", "status"}),
 		ownedClaude("claude-success", claudeArgs, "model-1.2", "high"),
 		ownedOmp("omp-success", ompArgs),
-		plainOmp("omp-nested-omp", "OMPCODE=1"),
+		plainOmp("omp-nested-omp", "RR_HOST=omp", "RR_HARNESS=omp"),
 		plainOmp("omp-preset-launcher-pid", "RR_LAUNCHER_PID=1"),
 		ownedClaude("claude-equals", []string{"--model=model-2", "--effort=low"}, "model-2", "low"),
 		ownedClaude("claude-defaults", []string{"prompt"}, "", ""),

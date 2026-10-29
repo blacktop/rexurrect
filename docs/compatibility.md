@@ -588,6 +588,11 @@ that field was not recorded.
 | `codex` | `NAME resume UUID -m M -c model_reasoning_effort="E"` |
 | `omp` | `NAME --resume UUID` (no model or effort) |
 
+Versions through v0.3.1 reject `host: omp` in receipts and saved generations.
+Back up the state directory before registering the first omp conversation. If
+you need to downgrade, restore that backup instead of pointing the older
+binary at the upgraded state directory.
+
 Reserved words in bash, zsh, and fish are rejected as command names. Legacy
 entries retain their original command text; manual-only and unknown legacy
 names get no input. This assumes the default

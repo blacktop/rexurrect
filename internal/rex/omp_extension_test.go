@@ -47,7 +47,7 @@ const pi = {
 const extension = await import(process.env.OMP_EXT!);
 extension.default(pi);
 
-const cur: Record<string, any> = { mode: "tui", agent: "main", id: "", disk: true };
+const cur = { mode: "tui", agent: "main", id: "", disk: true };
 for (const step of scenario.steps) {
 	Object.assign(cur, step.ctx ?? {});
 	const ctx = {

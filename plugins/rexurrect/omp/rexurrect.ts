@@ -51,9 +51,11 @@ export default function (pi: ExtensionAPI) {
 		pending = pending.then(() => ((queued = false), register(ctx))).catch(() => {});
 	};
 
-	for (const event of ["session_start", "session_switch", "session_branch", "turn_end", "agent_end"] as const) {
-		pi.on(event, (_event, ctx) => sync(ctx));
-	}
+	pi.on("session_start", (_event, ctx) => sync(ctx));
+	pi.on("session_switch", (_event, ctx) => sync(ctx));
+	pi.on("session_branch", (_event, ctx) => sync(ctx));
+	pi.on("turn_end", (_event, ctx) => sync(ctx));
+	pi.on("agent_end", (_event, ctx) => sync(ctx));
 	pi.on("session_shutdown", async (_event, ctx) => {
 		try {
 			if (!active(ctx)) return;
