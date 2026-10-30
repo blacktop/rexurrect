@@ -168,6 +168,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			if result.Restored != (snapshot.Recovery{}) {
 				detail += ", " + recoveryText(result.Restored)
 			}
+			if result.Native != 0 {
+				detail += fmt.Sprintf(", %d kept from Rex's own restore", result.Native)
+			}
 			_, textErr = fmt.Fprintf(stderr, "Automatic cycle %s: %s generation %d (%s, %s)\n", result.State, kind, generation, detail, rexAPIText(result.RexAPI))
 		}
 		textErr = errors.Join(textErr, reportRexSubstitution(stderr, result.RexBinarySubstitution))
@@ -210,6 +213,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return restoreErr
 		}
 		_, printErr := fmt.Fprintf(stdout, "Generation %d: journal %s (instance %s)\n", result.Generation, result.Outcome, result.InstanceID)
+		if result.Native != 0 {
+			_, err := fmt.Fprintf(stdout, "%d sessions kept from Rex's own restore\n", result.Native)
+			printErr = errors.Join(printErr, err)
+		}
 		keys := make([]string, 0, len(result.IDMap))
 		for source := range result.IDMap {
 			keys = append(keys, string(source))

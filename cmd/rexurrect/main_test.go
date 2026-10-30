@@ -180,6 +180,7 @@ func TestRestoreTextPrintsScrollbackSkips(t *testing.T) {
 case "$6:$8" in
   whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"new-instance","rex_version":"version"}' ;;
   api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  api:session.list) printf '%s\n' '{"sessions":[]}' ;;
   *) exit 1 ;;
 esac
 `), 0700); err != nil {

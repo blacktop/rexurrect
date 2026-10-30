@@ -26,6 +26,7 @@ type AutoResult struct {
 	RexAPI                   RexAPI                     `json:"rex_api,omitzero"`
 	RestoreOutcome           string                     `json:"restore_outcome"`
 	Restored                 snapshot.Recovery          `json:"restored,omitzero"`
+	Native                   int                        `json:"native,omitempty"`
 	SavedGeneration          uint64                     `json:"saved_generation,omitempty"`
 	Reason                   string                     `json:"reason,omitempty"`
 	CWDSubstitutions         []state.CWDSubstitution    `json:"cwd_substitutions,omitempty"`
@@ -111,6 +112,7 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 			out.NotResumed = restored.NotResumed
 			out.ScrollbackSkipped = restored.ScrollbackSkipped
 			out.Restored = restored.Recovery
+			out.Native = restored.Native
 			if restored.Outcome != "" {
 				out.RestoreOutcome = restored.Outcome
 			}

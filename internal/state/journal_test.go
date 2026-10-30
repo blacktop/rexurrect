@@ -181,3 +181,47 @@ func TestJournalCWDSubstitutionValidation(t *testing.T) {
 		t.Fatalf("valid additive journal field did not round-trip: %+v %v", loaded, err)
 	}
 }
+
+// A native record says Rex's own snapshot brought the session back: it keeps
+// every saved ID, resolves the session without a create, and is counted.
+func TestJournalNativeRecords(t *testing.T) {
+	s := openStore(t)
+	e, err := s.Publish(fixture(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, err := NewOperationMarker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := NewJournal(e, e.HostID, e.InstanceID)
+	if status := j.Status(e); status.Outcome != "pending" || status.Native != 0 {
+		t.Fatalf("empty journal: %+v", status)
+	}
+	if err := s.Record(e, &j, "session", marker, "native", snapshot.IDMap{"session": "elsewhere"}); err == nil || !strings.Contains(err.Error(), "keep the saved IDs") {
+		t.Fatalf("native record with a changed ID: %v", err)
+	}
+	if err := s.Record(e, &j, "session", marker, "native", snapshot.IDMap{"session": "session"}); err != nil {
+		t.Fatal(err)
+	}
+	status := j.Status(e)
+	if status.Outcome != "complete" || status.Native != 1 || status.IDMap["session"] != "session" {
+		t.Fatalf("native status: %+v", status)
+	}
+	for _, outcome := range []string{"intent", "created", "complete", "native"} {
+		if err := s.Record(e, &j, "session", marker, outcome, snapshot.IDMap{"session": "session"}); err == nil {
+			t.Errorf("%s after native was accepted", outcome)
+		}
+	}
+	loaded, err := s.LoadJournal(e, e.HostID, e.InstanceID)
+	if err != nil || !reflect.DeepEqual(loaded.Status(e), status) {
+		t.Fatalf("reloaded native journal: %+v %v", loaded, err)
+	}
+	intent := NewJournal(e, e.HostID, e.InstanceID)
+	if err := s.Record(e, &intent, "session", marker, "intent", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Record(e, &intent, "session", marker, "native", snapshot.IDMap{"session": "session"}); err == nil {
+		t.Fatal("native after intent was accepted")
+	}
+}

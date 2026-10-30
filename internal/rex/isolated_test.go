@@ -1,13 +1,16 @@
 package rex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -23,6 +26,11 @@ type isolatedServer struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	waitErr error
+	stderr  bytes.Buffer
+	// restore lets the private server bring its own sessions back from its
+	// snapshot on restart, as the live app server does. Off by default so
+	// the restart tests keep an empty baseline.
+	restore bool
 }
 
 const privateCycleTimeout = DefaultAutoTimeout
@@ -80,6 +88,31 @@ func newIsolatedServerWithSetup(t *testing.T, setup func(*isolatedServer)) *isol
 
 func (s *isolatedServer) start(t *testing.T) {
 	t.Helper()
+	if err := s.tryStart(t); err != nil {
+		t.Fatalf("private server failed to start: %v", err)
+	}
+}
+
+// died reports whether the private server exited on its own and reaps it
+// without failing the test. Rex's native restore can crash the restarted
+// server, which the native tests retry rather than report as ours.
+func (s *isolatedServer) died() (error, bool) {
+	if s.cmd == nil {
+		return nil, false
+	}
+	select {
+	case <-s.done:
+		err := fmt.Errorf("private server exited: %w\n%s", s.waitErr, s.stderr.String())
+		s.cancel()
+		s.cmd = nil
+		return err, true
+	default:
+		return nil, false
+	}
+}
+
+func (s *isolatedServer) tryStart(t *testing.T) error {
+	t.Helper()
 	if s.cmd != nil {
 		t.Fatal("server already running")
 	}
@@ -87,8 +120,10 @@ func (s *isolatedServer) start(t *testing.T) {
 	// LaunchAgent's interval checks, even when the host is busy at login.
 	ctx, cancel := context.WithTimeout(context.Background(), 6*privateCycleTimeout)
 	s.cancel = cancel
-	s.cmd = exec.CommandContext(ctx, s.client.Binary, "--autostart=false", "server", "run", "--listen", "unix://"+s.client.Socket, "--state-dir", filepath.Join(s.root, "state"), "--config", filepath.Join(s.root, "init.lua"), "--max-sessions", "4", "--max-blocks", "32", "--max-windows", "4", "--max-panes", "8")
+	s.cmd = exec.CommandContext(ctx, s.client.Binary, "--autostart=false", "server", "run", "--listen", "unix://"+s.client.Socket, "--state-dir", filepath.Join(s.root, "state"), "--config", filepath.Join(s.root, "init.lua"), "--restore="+strconv.FormatBool(s.restore), "--max-sessions", "4", "--max-blocks", "32", "--max-windows", "4", "--max-panes", "8")
 	s.cmd.Env = s.client.Env
+	s.stderr.Reset()
+	s.cmd.Stderr = &s.stderr
 	if err := s.cmd.Start(); err != nil {
 		s.cmd = nil
 		cancel()
@@ -102,16 +137,17 @@ func (s *isolatedServer) start(t *testing.T) {
 	for ready.Err() == nil {
 		if _, last = s.client.List(ready); last == nil {
 			t.Logf("private Rex PID %d ready", s.cmd.Process.Pid)
-			return
+			return nil
+		}
+		if err, dead := s.died(); dead {
+			return err
 		}
 		select {
-		case <-s.done:
-			t.Fatalf("private server exited: %v", s.waitErr)
 		case <-ready.Done():
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	t.Fatalf("private server failed to start: %v", last)
+	return last
 }
 
 func (s *isolatedServer) stop(t *testing.T) {
@@ -136,7 +172,7 @@ func (s *isolatedServer) stop(t *testing.T) {
 	}
 	s.cancel()
 	if s.waitErr != nil {
-		t.Errorf("private server exit: %v", s.waitErr)
+		t.Errorf("private server exit: %v\n%s", s.waitErr, s.stderr.String())
 	}
 	s.cmd = nil
 }

@@ -99,6 +99,12 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	if err := c.checkInstance(ctx, target); err != nil {
 		return out, err
 	}
+	kept, err := c.keepNative(ctx, store, e, &j, latest)
+	if err != nil {
+		return out, err
+	}
+	maps.Copy(out.IDMap, kept)
+	latest = j.Latest()
 	// Scrollback replay is decided once, before any create, so a lost
 	// acknowledgement can never start a second replay for the same block. Only
 	// the sessions this invocation creates take part: completed and in-flight
@@ -114,7 +120,7 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	}
 	for _, session := range e.Snapshot.Sessions {
 		r := latest[session.ID]
-		if r.Outcome == "complete" {
+		if r.Outcome == "complete" || r.Outcome == "native" {
 			continue
 		}
 		var substitutions []state.CWDSubstitution
@@ -205,6 +211,101 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 		}
 	}
 	return out, nil
+}
+
+// keepNative records every saved session that Rex's own snapshot has already
+// brought back under its saved ID, so the restore never creates a copy of it.
+// Rex keeps window and block IDs as well; each one that is live is mapped to
+// itself, and nothing in the session is created, configured, or replayed.
+func (c Client) keepNative(ctx context.Context, store *state.Store, e state.Envelope, j *state.Journal, latest map[snapshot.SourceID]state.JournalRecord) (snapshot.IDMap, error) {
+	kept := make(snapshot.IDMap)
+	pending := slices.ContainsFunc(e.Snapshot.Sessions, func(session snapshot.Session) bool { return latest[session.ID].Outcome == "" })
+	if !pending {
+		return kept, nil
+	}
+	live, err := c.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, session := range e.Snapshot.Sessions {
+		if latest[session.ID].Outcome != "" || !slices.Contains(live, snapshot.LiveID(session.ID)) {
+			continue
+		}
+		view, err := c.view(ctx, snapshot.LiveID(session.ID))
+		if err != nil {
+			return nil, err
+		}
+		present := make(map[snapshot.SourceID]bool)
+		for _, w := range view.Windows {
+			present[snapshot.SourceID(w.ID)] = true
+			for _, layer := range w.Layers {
+				present[snapshot.SourceID(layer.ID)] = true
+				for _, b := range layer.Blocks {
+					present[snapshot.SourceID(b.ID)] = true
+				}
+				for id := range liveSplits(layer.Layout) {
+					present[snapshot.SourceID(id)] = true
+				}
+			}
+		}
+		ids := snapshot.IDMap{session.ID: snapshot.LiveID(session.ID)}
+		for _, w := range session.Windows {
+			for _, id := range []snapshot.SourceID{w.ID, w.LayerID} {
+				if present[id] {
+					ids[id] = snapshot.LiveID(id)
+				}
+			}
+			for id := range savedSplits(w.Layout) {
+				if present[id] {
+					ids[id] = snapshot.LiveID(id)
+				}
+			}
+		}
+		for _, b := range session.Blocks() {
+			if present[b.ID] {
+				ids[b.ID] = snapshot.LiveID(b.ID)
+			}
+		}
+		marker, err := state.NewOperationMarker()
+		if err != nil {
+			return nil, err
+		}
+		if err := store.Record(e, j, session.ID, marker, "native", ids); err != nil {
+			return nil, err
+		}
+		maps.Copy(kept, ids)
+	}
+	return kept, nil
+}
+
+func liveSplits(n viewNode) map[snapshot.LiveID]bool {
+	out := make(map[snapshot.LiveID]bool)
+	var walk func(viewNode)
+	walk = func(n viewNode) {
+		if n.Split == nil {
+			return
+		}
+		out[n.Split.ID] = true
+		walk(n.Split.Before)
+		walk(n.Split.After)
+	}
+	walk(n)
+	return out
+}
+
+func savedSplits(n snapshot.Node) map[snapshot.SourceID]bool {
+	out := make(map[snapshot.SourceID]bool)
+	var walk func(snapshot.Node)
+	walk = func(n snapshot.Node) {
+		if n.Split == nil {
+			return
+		}
+		out[n.Split.ID] = true
+		walk(n.Split.Before)
+		walk(n.Split.After)
+	}
+	walk(n)
+	return out
 }
 
 // New creates resolve missing directories once, before their durable intent.

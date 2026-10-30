@@ -448,6 +448,36 @@ partial mappings, and ambiguous-marker recovery. Focused tests cover zero-match
 uncertainty, missing current state, invalid/oversized journals, and generation
 and instance binding.
 
+### Sessions Rex restores itself
+
+Rex preview.23 (server build 0.0.1793299046 and later) snapshots its sessions
+and restores them when the server starts, keeping every session, window,
+layer, split, and block ID, the labels, layout, and working directories. It
+does not restore scrollback, and every pane comes back running the account's
+default shell, whatever it ran before. `rex server run --restore=false`
+starts without that snapshot and saves none.
+
+A restore, manual or automatic, lists the live sessions after resolving any
+outstanding create and before creating anything. A saved session whose ID is
+live is recorded in the journal with outcome `native` and an ID map from each
+saved ID to itself, covering every window, layer, split, and block that Rex
+brought back. Nothing is created, configured, replayed, or typed for it, and
+its receipts stay bound to the unchanged block IDs. Every other saved session
+is created as before, so a session destroyed after the last save, which Rex's
+snapshot no longer holds, is still recreated from rexurrect's generation. A
+`native` record is only valid as a session's first record and only with
+unchanged IDs; `status`, `restore`, and `auto` report the count as `native`
+(JSON) and "kept from Rex's own restore" (text), and the journal outcome is
+`complete` once every session is native or complete.
+
+The private-server tests start their servers with `--restore=false` so a
+restart still yields an empty server; `TestNativeRestorePrivateServer` runs
+with the snapshot on and proves that a restart keeps both fixture sessions
+under their IDs with a zero recovery count, that a repeated cycle is
+`same_instance`, and that a session destroyed before a restart is recreated
+beside the one Rex restored. The suite therefore needs a Rex build whose
+`rex server run` accepts `--restore`.
+
 ## Automatic cycle (S2a)
 
 `auto` runs one save/restore cycle. It requires the same explicit Unix socket,

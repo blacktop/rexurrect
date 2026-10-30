@@ -180,7 +180,8 @@ func TestAutoCyclePrivateServer(t *testing.T) {
 					seed.InstanceID = first.InstanceID
 				}
 				seedBlockedJournal(t, blockedDir, seed, current.Envelope.InstanceID, outcome)
-				files, sessions := savedFiles(t, blockedDir), listSessions(t, s.client)
+				blocked := loadSaved(t, blockedDir).Envelope
+				files, sessions, seeded := savedFiles(t, blockedDir), listSessions(t, s.client), journalFor(t, s.client, blockedDir, blocked)
 				out, err := s.client.AutoCycle(t.Context(), blockedDir, DefaultAutoWait, privateCycleTimeout)
 				want := "same_instance_blocked"
 				reason := outcome
@@ -196,8 +197,27 @@ func TestAutoCyclePrivateServer(t *testing.T) {
 				if err == nil || out.State != want || out.RestoreOutcome != outcome || out.SavedGeneration != 0 || !strings.Contains(out.Reason, reason) {
 					t.Fatalf("unresolved journal: %+v %v", out, err)
 				}
-				if !reflect.DeepEqual(files, savedFiles(t, blockedDir)) || !slices.Equal(sessions, listSessions(t, s.client)) {
+				// The fixture sessions are still live under their saved IDs, as
+				// after a native Rex restore, so a blocked cycle may still record
+				// the sessions it did not have to create. Nothing else may change.
+				after := savedFiles(t, blockedDir)
+				j := journalFor(t, s.client, blockedDir, blocked)
+				for name := range files {
+					if strings.HasPrefix(filepath.Base(name), "restore-") {
+						delete(files, name)
+						delete(after, name)
+					}
+				}
+				if !reflect.DeepEqual(files, after) || !slices.Equal(sessions, listSessions(t, s.client)) {
 					t.Fatal("blocked cycle changed state or sessions")
+				}
+				if len(j.Records) < len(seeded.Records) || !reflect.DeepEqual(j.Records[:len(seeded.Records)], seeded.Records) {
+					t.Fatalf("blocked cycle rewrote seeded journal records: %+v", j.Records)
+				}
+				for _, r := range j.Records[len(seeded.Records):] {
+					if r.Outcome != "native" || !slices.Contains(sessions, snapshot.LiveID(r.SourceID)) {
+						t.Fatalf("blocked cycle recorded %s for %s", r.Outcome, r.SourceID)
+					}
 				}
 			})
 		}

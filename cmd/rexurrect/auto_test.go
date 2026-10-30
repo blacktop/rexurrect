@@ -51,7 +51,7 @@ func TestAutoBinaryPrivateServer(t *testing.T) {
 	client := rex.Client{Binary: rexBinary, Socket: filepath.Join(root, "s"), Env: []string{"HOME=" + filepath.Join(root, "home"), "XDG_CONFIG_HOME=" + filepath.Join(root, "home", "config"), "XDG_DATA_HOME=" + filepath.Join(root, "home", "data"), "XDG_STATE_HOME=" + filepath.Join(root, "home", "state"), "XDG_CACHE_HOME=" + filepath.Join(root, "home", "cache"), "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "SHELL=/bin/sh", "TERM=xterm-256color", "TMPDIR=" + root}}
 	client.CallTimeout = rex.DefaultCallTimeout
 	ctx, cancel := context.WithTimeout(context.Background(), 3*cycleTimeout)
-	server := exec.CommandContext(ctx, rexBinary, "--autostart=false", "server", "run", "--listen", "unix://"+client.Socket, "--state-dir", filepath.Join(root, "state"), "--config", config, "--max-sessions", "2", "--max-blocks", "4", "--max-windows", "2", "--max-panes", "2")
+	server := exec.CommandContext(ctx, rexBinary, "--autostart=false", "server", "run", "--listen", "unix://"+client.Socket, "--state-dir", filepath.Join(root, "state"), "--config", config, "--restore=false", "--max-sessions", "2", "--max-blocks", "4", "--max-windows", "2", "--max-panes", "2")
 	server.Env = client.Env
 	if err := server.Start(); err != nil {
 		cancel()

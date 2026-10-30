@@ -53,11 +53,15 @@ type CWDSubstitution struct {
 }
 
 type JournalStatus struct {
-	Generation       uint64            `json:"generation"`
-	HostID           string            `json:"host_id"`
-	InstanceID       string            `json:"instance_id"`
-	Outcome          string            `json:"outcome"`
-	IDMap            snapshot.IDMap    `json:"id_map"`
+	Generation uint64         `json:"generation"`
+	HostID     string         `json:"host_id"`
+	InstanceID string         `json:"instance_id"`
+	Outcome    string         `json:"outcome"`
+	IDMap      snapshot.IDMap `json:"id_map"`
+	// Native counts saved sessions that Rex's own snapshot had already
+	// brought back with their IDs, so the restore kept them instead of
+	// creating copies.
+	Native           int               `json:"native,omitempty"`
 	MissingSessions  []snapshot.LiveID `json:"missing_sessions,omitempty"`
 	CWDSubstitutions []CWDSubstitution `json:"cwd_substitutions,omitempty"`
 	NotResumed       []AgentNotResumed `json:"not_resumed,omitempty"`
@@ -120,8 +124,11 @@ func (j Journal) Status(e Envelope) JournalStatus {
 		r := latest[session.ID]
 		if r.Outcome == "intent" || r.Outcome == "uncertain" {
 			out.Outcome = "uncertain"
-		} else if r.Outcome != "complete" && out.Outcome != "uncertain" {
+		} else if r.Outcome != "complete" && r.Outcome != "native" && out.Outcome != "uncertain" {
 			out.Outcome = "pending"
+		}
+		if r.Outcome == "native" {
+			out.Native++
 		}
 		maps.Copy(out.IDMap, r.IDMap)
 	}
@@ -177,6 +184,15 @@ func (j Journal) validate(e Envelope, host, instance string) error {
 			allowed = previous.Outcome == "created" || previous.Outcome == "recovered"
 		case "complete":
 			allowed = previous.Outcome == "configuring"
+		case "native":
+			// Rex restored the session itself, keeping every ID: the record
+			// maps saved IDs to themselves and nothing was created.
+			allowed = previous.Outcome == ""
+			for old, live := range r.IDMap {
+				if string(live) != string(old) {
+					return errors.New("a native restore record must keep the saved IDs")
+				}
+			}
 		}
 		if !allowed || previous.Marker != "" && previous.Marker != r.Marker || markers[r.Marker] != "" && markers[r.Marker] != r.SourceID {
 			return errors.New("invalid restore journal transition or marker")
