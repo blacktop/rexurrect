@@ -464,6 +464,7 @@ func TestRestoreCancelledDuringKeyLoadRecordsNoIntent(t *testing.T) {
 case "$6:$8" in
   whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"new","rex_version":"v"}' ;;
   api:server.version) printf '%s\n' '{"rex_version":"v","commit":"c"}' ;;
+  api:session.list) printf '%s\n' '{"sessions":[]}' ;;
   *) exit 1 ;;
 esac
 `), 0700); err != nil {
@@ -480,9 +481,12 @@ esac
 		t.Fatal(err)
 	}
 	target := serverIdentity{HostID: "host", InstanceID: "new", RexVersion: "v", Commit: "c"}
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	// The deadline must outlast the stub's first execs (the instance check
+	// and the session list) and expire inside the key load, which hangs for
+	// fake.Timeout.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	out, err := c.restoreSaved(ctx, store, published, target)
+	out, err := c.restoreSaved(ctx, store, published, target, acceptLiveState)
 	if !errors.Is(err, context.DeadlineExceeded) || len(out.ScrollbackSkipped) != 0 {
 		t.Fatalf("cancelled restore: %+v %v", out, err)
 	}

@@ -32,6 +32,13 @@ type Journal struct {
 	Records       []JournalRecord `json:"records"`
 }
 
+// Resolved reports whether the session needs no further restore work: either
+// rexurrect created and configured it, or Rex restored it itself and the
+// restore kept it (outcome native) instead of creating a copy.
+func (r JournalRecord) Resolved() bool {
+	return r.Outcome == "complete" || r.Outcome == "native"
+}
+
 type JournalRecord struct {
 	Generation       uint64            `json:"generation"`
 	HostID           string            `json:"host_id"`
@@ -52,15 +59,15 @@ type CWDSubstitution struct {
 	RestoredCWD string            `json:"restored_cwd"`
 }
 
+// JournalStatus summarizes a restore journal for one generation and server
+// instance. Native counts the saved sessions Rex's own snapshot had already
+// brought back under their IDs, which the restore kept instead of creating.
 type JournalStatus struct {
-	Generation uint64         `json:"generation"`
-	HostID     string         `json:"host_id"`
-	InstanceID string         `json:"instance_id"`
-	Outcome    string         `json:"outcome"`
-	IDMap      snapshot.IDMap `json:"id_map"`
-	// Native counts saved sessions that Rex's own snapshot had already
-	// brought back with their IDs, so the restore kept them instead of
-	// creating copies.
+	Generation       uint64            `json:"generation"`
+	HostID           string            `json:"host_id"`
+	InstanceID       string            `json:"instance_id"`
+	Outcome          string            `json:"outcome"`
+	IDMap            snapshot.IDMap    `json:"id_map"`
 	Native           int               `json:"native,omitempty"`
 	MissingSessions  []snapshot.LiveID `json:"missing_sessions,omitempty"`
 	CWDSubstitutions []CWDSubstitution `json:"cwd_substitutions,omitempty"`
@@ -124,7 +131,7 @@ func (j Journal) Status(e Envelope) JournalStatus {
 		r := latest[session.ID]
 		if r.Outcome == "intent" || r.Outcome == "uncertain" {
 			out.Outcome = "uncertain"
-		} else if r.Outcome != "complete" && r.Outcome != "native" && out.Outcome != "uncertain" {
+		} else if !r.Resolved() && out.Outcome != "uncertain" {
 			out.Outcome = "pending"
 		}
 		if r.Outcome == "native" {
@@ -143,7 +150,7 @@ func (j Journal) validate(e Envelope, host, instance string) error {
 	skips := make(map[snapshot.SourceID][]AgentNotResumed)
 	cwds := make(map[snapshot.SourceID]string)
 	for _, session := range e.Snapshot.Sessions {
-		ids, err := (snapshot.Snapshot{Version: snapshot.Version, Sessions: []snapshot.Session{session}}).Inventory()
+		ids, err := snapshot.Single(session).Inventory()
 		if err != nil {
 			return err
 		}
@@ -185,8 +192,6 @@ func (j Journal) validate(e Envelope, host, instance string) error {
 		case "complete":
 			allowed = previous.Outcome == "configuring"
 		case "native":
-			// Rex restored the session itself, keeping every ID: the record
-			// maps saved IDs to themselves and nothing was created.
 			allowed = previous.Outcome == ""
 			for old, live := range r.IDMap {
 				if string(live) != string(old) {

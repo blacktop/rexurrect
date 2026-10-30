@@ -306,7 +306,7 @@ func (c Client) status(ctx context.Context, store *state.Store, current state.Cu
 		latest := j.Latest()
 		var completed []snapshot.LiveID
 		for _, session := range e.Snapshot.Sessions {
-			if r := latest[session.ID]; r.Outcome == "complete" {
+			if r := latest[session.ID]; r.Resolved() {
 				completed = append(completed, r.IDMap[session.ID])
 			}
 		}

@@ -96,18 +96,18 @@ func (s *isolatedServer) start(t *testing.T) {
 // died reports whether the private server exited on its own and reaps it
 // without failing the test. Rex's native restore can crash the restarted
 // server, which the native tests retry rather than report as ours.
-func (s *isolatedServer) died() (error, bool) {
+func (s *isolatedServer) died() error {
 	if s.cmd == nil {
-		return nil, false
+		return nil
 	}
 	select {
 	case <-s.done:
 		err := fmt.Errorf("private server exited: %w\n%s", s.waitErr, s.stderr.String())
 		s.cancel()
 		s.cmd = nil
-		return err, true
+		return err
 	default:
-		return nil, false
+		return nil
 	}
 }
 
@@ -139,7 +139,7 @@ func (s *isolatedServer) tryStart(t *testing.T) error {
 			t.Logf("private Rex PID %d ready", s.cmd.Process.Pid)
 			return nil
 		}
-		if err, dead := s.died(); dead {
+		if err := s.died(); err != nil {
 			return err
 		}
 		select {

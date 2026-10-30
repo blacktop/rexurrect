@@ -296,3 +296,43 @@ esac
 		t.Fatalf("omitted range text: %s %v", out.String(), err)
 	}
 }
+
+// Text status names the sessions Rex restored itself, as restore and auto do.
+func TestStatusTextPrintsNativeCount(t *testing.T) {
+	root := t.TempDir()
+	dir, binary := filepath.Join(root, "state"), filepath.Join(root, "rex")
+	if err := os.WriteFile(binary, []byte(`#!/bin/sh
+case "$6:$8" in
+  whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"instance","rex_version":"version"}' ;;
+  api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  api:session.list) printf '%s\n' '{"sessions":[{"session_id":"source"}]}' ;;
+  *) exit 1 ;;
+esac
+`), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := state.Envelope{CapturedAt: time.Now().UTC(), RexVersion: "version", Commit: "commit", HostID: "host", InstanceID: "saved-instance", Report: &snapshot.Report{}, Snapshot: snapshot.Snapshot{Version: snapshot.Version, Sessions: []snapshot.Session{{ID: "source"}}}}
+	published, err := s.Publish(e, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, err := state.NewOperationMarker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := state.NewJournal(published, "host", "instance")
+	if err := errors.Join(s.Record(published, &j, "source", marker, "native", snapshot.IDMap{"source": "source"}), s.Close()); err != nil {
+		t.Fatal(err)
+	}
+	var out, diagnostic bytes.Buffer
+	if err := run(t.Context(), []string{"status", "--server", "unix:///private/tmp/unused", "--state-dir", dir, "--rex", binary}, &out, &diagnostic); err != nil {
+		t.Fatalf("status: %v\n%s", err, &diagnostic)
+	}
+	if !strings.Contains(out.String(), "Journal complete (instance instance)\n1 sessions kept from Rex's own restore\n") {
+		t.Fatalf("status text lacks the native count:\n%s", &out)
+	}
+}

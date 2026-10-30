@@ -32,17 +32,31 @@ func (c Client) RestoreSaved(ctx context.Context, dir string, generation uint64)
 	if err != nil {
 		return out, err
 	}
-	return c.restoreSaved(ctx, store, e, target)
+	return c.restoreSaved(ctx, store, e, target, matchGeneration)
 }
 
-func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.Envelope, target serverIdentity) (out state.JournalStatus, err error) {
+// nativePolicy says what a restore does with a saved session that Rex has
+// already brought back under the same ID.
+type nativePolicy int
+
+const (
+	// acceptLiveState keeps whatever Rex restored: its snapshot is newer
+	// than the saved generation, so later edits and deletions are truth.
+	acceptLiveState nativePolicy = iota
+	// matchGeneration keeps the live session only if it equals the selected
+	// generation; an explicit restore of an older generation must not report
+	// completion over a different layout.
+	matchGeneration
+)
+
+func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.Envelope, target serverIdentity, policy nativePolicy) (out state.JournalStatus, err error) {
 	if target.HostID != e.HostID {
 		return out, errors.New("state belongs to a different Rex host")
 	}
 	j, err := store.LoadJournal(e, target.HostID, target.InstanceID)
-	if errors.Is(err, state.ErrNoJournal) {
-		j = state.NewJournal(e, target.HostID, target.InstanceID)
-		err = store.WriteJournal(e, j)
+	fresh := errors.Is(err, state.ErrNoJournal)
+	if fresh {
+		j, err = state.NewJournal(e, target.HostID, target.InstanceID), nil
 	}
 	if err != nil {
 		return out, err
@@ -63,25 +77,8 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	for _, sub := range out.CWDSubstitutions {
 		recordedCWD[sub.BlockID] = sub.RestoredCWD
 	}
-	// Completed sessions are historical creations, never candidates for a new
-	// create. Verify their recorded IDs before resuming any unfinished work.
-	for _, session := range e.Snapshot.Sessions {
-		r := latest[session.ID]
-		if r.Outcome != "complete" && r.Outcome != "configuring" {
-			continue
-		}
-		session, _, err = restoreSessionCWD(session, recordedCWD, false)
-		if err != nil {
-			return out, err
-		}
-		if err := c.verifyRestored(ctx, session, r.IDMap, r.Outcome == "configuring"); err != nil {
-			id := r.IDMap[session.ID]
-			live, listErr := c.List(ctx)
-			if listErr == nil && !slices.Contains(live, id) {
-				return out, fmt.Errorf("recorded %s session %s is missing: %w", r.Outcome, id, err)
-			}
-			return out, fmt.Errorf("recorded %s session %s could not be verified: %w", r.Outcome, id, err)
-		}
+	if err := c.verifyRecorded(ctx, e, latest, recordedCWD, policy); err != nil {
+		return out, err
 	}
 	// Resolve every outstanding create before allowing any new mutation. Zero
 	// is inconclusive: a timed-out request may still be running on the server.
@@ -99,11 +96,20 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	if err := c.checkInstance(ctx, target); err != nil {
 		return out, err
 	}
-	kept, err := c.keepNative(ctx, store, e, &j, latest)
+	// Nothing is written before the native decision, so a refused explicit
+	// restore leaves no journal behind to block the automatic cycle.
+	kept, err := c.decideNative(ctx, e, latest, target, policy)
 	if err != nil {
 		return out, err
 	}
-	maps.Copy(out.IDMap, kept)
+	if fresh {
+		if err := store.WriteJournal(e, j); err != nil {
+			return out, err
+		}
+	}
+	if err := recordNative(store, e, &j, kept); err != nil {
+		return out, err
+	}
 	latest = j.Latest()
 	// Scrollback replay is decided once, before any create, so a lost
 	// acknowledgement can never start a second replay for the same block. Only
@@ -120,7 +126,7 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	}
 	for _, session := range e.Snapshot.Sessions {
 		r := latest[session.ID]
-		if r.Outcome == "complete" || r.Outcome == "native" {
+		if r.Resolved() {
 			continue
 		}
 		var substitutions []state.CWDSubstitution
@@ -213,99 +219,184 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	return out, nil
 }
 
-// keepNative records every saved session that Rex's own snapshot has already
-// brought back under its saved ID, so the restore never creates a copy of it.
-// Rex keeps window and block IDs as well; each one that is live is mapped to
-// itself, and nothing in the session is created, configured, or replayed.
-func (c Client) keepNative(ctx context.Context, store *state.Store, e state.Envelope, j *state.Journal, latest map[snapshot.SourceID]state.JournalRecord) (snapshot.IDMap, error) {
-	kept := make(snapshot.IDMap)
-	pending := slices.ContainsFunc(e.Snapshot.Sessions, func(session snapshot.Session) bool { return latest[session.ID].Outcome == "" })
-	if !pending {
-		return kept, nil
+// verifyRecorded checks every session an earlier run finished against the
+// live server before any unfinished work resumes. A completed session must
+// still match its recorded IDs. A session Rex restored itself must still be
+// live, and an explicit restore holds it to the selected generation whether
+// or not an earlier cycle recorded it.
+func (c Client) verifyRecorded(ctx context.Context, e state.Envelope, latest map[snapshot.SourceID]state.JournalRecord, recordedCWD map[snapshot.SourceID]string, policy nativePolicy) error {
+	var live []snapshot.LiveID
+	for _, session := range e.Snapshot.Sessions {
+		r := latest[session.ID]
+		if r.Outcome == "native" && policy == acceptLiveState {
+			if live == nil {
+				var err error
+				if live, err = c.List(ctx); err != nil {
+					return err
+				}
+			}
+			if !slices.Contains(live, snapshot.LiveID(session.ID)) {
+				return fmt.Errorf("recorded native session %s is missing", session.ID)
+			}
+			continue
+		}
+		if r.Outcome != "complete" && r.Outcome != "configuring" && r.Outcome != "native" {
+			continue
+		}
+		session, _, err := restoreSessionCWD(session, recordedCWD, false)
+		if err != nil {
+			return err
+		}
+		if err := c.verifyRestored(ctx, session, r.IDMap, r.Outcome == "configuring"); err != nil {
+			id := r.IDMap[session.ID]
+			listed, listErr := c.List(ctx)
+			if listErr == nil && !slices.Contains(listed, id) {
+				return fmt.Errorf("recorded %s session %s is missing: %w", r.Outcome, id, err)
+			}
+			if r.Outcome == "native" {
+				return nativeMismatch(e, session.ID, err, "save to record the live layout")
+			}
+			return fmt.Errorf("recorded %s session %s could not be verified: %w", r.Outcome, id, err)
+		}
+	}
+	return nil
+}
+
+// nativeKeep is a saved session Rex brought back itself; the restore records
+// it instead of creating a copy.
+type nativeKeep struct {
+	session snapshot.SourceID
+	ids     snapshot.IDMap
+}
+
+// decideNative finds every pending saved session that Rex's own snapshot has
+// already brought back under its saved ID, waits until Rex has finished with
+// it, and compares it with the generation under policy. It writes nothing, so
+// an explicit restore is refused before any journal changes. The waits may
+// have outlived the server, so the instance is checked once after them: the
+// same IDs on a new instance belong to that instance's own restore.
+func (c Client) decideNative(ctx context.Context, e state.Envelope, latest map[snapshot.SourceID]state.JournalRecord, target serverIdentity, policy nativePolicy) ([]nativeKeep, error) {
+	pending := creatingSessions(e, latest).Snapshot.Sessions
+	if len(pending) == 0 {
+		return nil, nil
 	}
 	live, err := c.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, session := range e.Snapshot.Sessions {
-		if latest[session.ID].Outcome != "" || !slices.Contains(live, snapshot.LiveID(session.ID)) {
+	var kept []nativeKeep
+	for _, session := range pending {
+		if !slices.Contains(live, snapshot.LiveID(session.ID)) {
 			continue
 		}
-		view, err := c.view(ctx, snapshot.LiveID(session.ID))
+		ids, observed, err := c.awaitNative(ctx, session)
 		if err != nil {
 			return nil, err
 		}
-		present := make(map[snapshot.SourceID]bool)
-		for _, w := range view.Windows {
-			present[snapshot.SourceID(w.ID)] = true
-			for _, layer := range w.Layers {
-				present[snapshot.SourceID(layer.ID)] = true
-				for _, b := range layer.Blocks {
-					present[snapshot.SourceID(b.ID)] = true
-				}
-				for id := range liveSplits(layer.Layout) {
-					present[snapshot.SourceID(id)] = true
-				}
+		if policy == matchGeneration {
+			if err := snapshot.Compare(snapshot.Single(session), observed, ids); err != nil {
+				return nil, nativeMismatch(e, session.ID, err, "save to keep the live layout, or destroy the session to restore the saved one")
 			}
 		}
-		ids := snapshot.IDMap{session.ID: snapshot.LiveID(session.ID)}
-		for _, w := range session.Windows {
-			for _, id := range []snapshot.SourceID{w.ID, w.LayerID} {
-				if present[id] {
-					ids[id] = snapshot.LiveID(id)
-				}
-			}
-			for id := range savedSplits(w.Layout) {
-				if present[id] {
-					ids[id] = snapshot.LiveID(id)
-				}
-			}
-		}
-		for _, b := range session.Blocks() {
-			if present[b.ID] {
-				ids[b.ID] = snapshot.LiveID(b.ID)
-			}
-		}
-		marker, err := state.NewOperationMarker()
-		if err != nil {
-			return nil, err
-		}
-		if err := store.Record(e, j, session.ID, marker, "native", ids); err != nil {
-			return nil, err
-		}
-		maps.Copy(kept, ids)
+		kept = append(kept, nativeKeep{session: session.ID, ids: ids})
+	}
+	if len(kept) == 0 {
+		return nil, nil
+	}
+	if err := c.checkInstance(ctx, target); err != nil {
+		return nil, err
 	}
 	return kept, nil
 }
 
-func liveSplits(n viewNode) map[snapshot.LiveID]bool {
-	out := make(map[snapshot.LiveID]bool)
-	var walk func(viewNode)
-	walk = func(n viewNode) {
-		if n.Split == nil {
-			return
+// recordNative records each kept session with outcome native. Rex keeps
+// window, layer, split and block IDs as well, so the record maps every saved
+// ID that is live to itself; nothing is created, configured, or replayed.
+func recordNative(store *state.Store, e state.Envelope, j *state.Journal, kept []nativeKeep) error {
+	for _, k := range kept {
+		marker, err := state.NewOperationMarker()
+		if err != nil {
+			return err
 		}
-		out[n.Split.ID] = true
-		walk(n.Split.Before)
-		walk(n.Split.After)
+		if err := store.Record(e, j, k.session, marker, "native", k.ids); err != nil {
+			return err
+		}
 	}
-	walk(n)
-	return out
+	return nil
 }
 
-func savedSplits(n snapshot.Node) map[snapshot.SourceID]bool {
-	out := make(map[snapshot.SourceID]bool)
-	var walk func(snapshot.Node)
-	walk = func(n snapshot.Node) {
-		if n.Split == nil {
-			return
-		}
-		out[n.Split.ID] = true
-		walk(n.Split.Before)
-		walk(n.Split.After)
+// nativeMismatch refuses an explicit restore over a session Rex restored
+// that differs from the generation. The advice depends on whether the
+// session is already recorded: a native record is terminal, so destroying
+// the session afterwards would leave it missing rather than recreate it.
+func nativeMismatch(e state.Envelope, session snapshot.SourceID, err error, advice string) error {
+	return fmt.Errorf("session %s is live as Rex restored it but differs from generation %d: %w; %s", session, e.Generation, err, advice)
+}
+
+const (
+	nativeReadyWait = 30 * time.Second
+	nativeReadyPoll = 250 * time.Millisecond
+	nativeSettle    = 2 * time.Second
+)
+
+// awaitNative waits until Rex has finished bringing session back. Rex creates
+// restored blocks in the background after the server answers, and a session
+// recorded before that would be saved without them and lose their receipts.
+// Rex's snapshot is newer than the saved generation and may hold more or
+// fewer resources, so the saved inventory cannot say when Rex is done: the
+// session is ready once every pane reports its working directory and nothing
+// in the session has changed for nativeSettle. It returns the saved IDs that
+// are live and the capture they came from, so the map and any comparison
+// agree.
+func (c Client) awaitNative(ctx context.Context, session snapshot.Session) (snapshot.IDMap, snapshot.Snapshot, error) {
+	inventory, err := snapshot.Single(session).Inventory()
+	if err != nil {
+		return nil, snapshot.Snapshot{}, err
 	}
-	walk(n)
-	return out
+	deadline := time.Now().Add(nativeReadyWait)
+	var previous map[snapshot.SourceID]string
+	settled := time.Now()
+	for {
+		observed, report, err := c.Capture(ctx, []snapshot.LiveID{snapshot.LiveID(session.ID)})
+		if err != nil {
+			return nil, snapshot.Snapshot{}, err
+		}
+		live, err := observed.Inventory()
+		if err != nil {
+			return nil, snapshot.Snapshot{}, err
+		}
+		if !maps.Equal(live, previous) {
+			previous, settled = live, time.Now()
+		}
+		ids := make(snapshot.IDMap, len(inventory))
+		for id, kind := range inventory {
+			if live[id] == kind {
+				ids[id] = snapshot.LiveID(id)
+			}
+		}
+		// A session Rex has listed but not yet populated has no panes and a
+		// stable shape; it must not settle into a record of its ID alone. A
+		// saved session with no panes is populated as soon as it is live.
+		populated := len(observed.Sessions) == 1 && (len(observed.Sessions[0].Blocks()) != 0 || len(inventory) == 1)
+		running := populated && len(report.CWDSubstitutions) == 0
+		if running && time.Since(settled) >= nativeSettle {
+			return ids, observed, nil
+		}
+		if ctx.Err() != nil {
+			return nil, snapshot.Snapshot{}, fmt.Errorf("waiting for the Rex server to restore session %s (%s): %w", session.ID, nativeProgress(running, len(ids), len(inventory)), ctx.Err())
+		}
+		if time.Now().After(deadline) {
+			return nil, snapshot.Snapshot{}, fmt.Errorf("the Rex server is still restoring session %s (%s); retry later", session.ID, nativeProgress(running, len(ids), len(inventory)))
+		}
+		pause(ctx, nativeReadyPoll)
+	}
+}
+
+func nativeProgress(running bool, present, saved int) string {
+	if !running {
+		return "its shells are still starting"
+	}
+	return fmt.Sprintf("%d of %d saved resources are present", present, saved)
 }
 
 // New creates resolve missing directories once, before their durable intent.
@@ -368,7 +459,7 @@ func creatingSessions(e state.Envelope, latest map[snapshot.SourceID]state.Journ
 }
 
 func (c Client) checkInstance(ctx context.Context, want serverIdentity) error {
-	got, err := c.identity(ctx)
+	got, err := c.whoami(ctx)
 	if err != nil {
 		return err
 	}
@@ -427,5 +518,5 @@ func (c Client) verifyRestored(ctx context.Context, session snapshot.Session, id
 			got.Windows[i].Zoom = snapshot.SourceID(ids[w.Zoom])
 		}
 	}
-	return snapshot.Compare(snapshot.Snapshot{Version: snapshot.Version, Sessions: []snapshot.Session{session}}, observed, ids)
+	return snapshot.Compare(snapshot.Single(session), observed, ids)
 }

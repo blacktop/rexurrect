@@ -37,12 +37,7 @@ func (c Client) AwaitServer(ctx context.Context, wait time.Duration, keepWaiting
 			}
 			return id.PID, nil
 		}
-		timer := time.NewTimer(awaitPollInterval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-		case <-timer.C:
-		}
+		pause(ctx, awaitPollInterval)
 	}
 	return 0, nil
 }

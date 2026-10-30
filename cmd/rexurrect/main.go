@@ -32,6 +32,16 @@ func recoveryText(r snapshot.Recovery) string {
 	return fmt.Sprintf("%d agents resume, %d commands typed, %d plain shells, %d inert receipts", r.Agents, r.Typed, r.Plain, r.Inert)
 }
 
+// printNative names the sessions Rex restored itself, which the journal kept
+// instead of creating; nothing is printed when there are none.
+func printNative(w io.Writer, n int) error {
+	if n == 0 {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "%d sessions kept from Rex's own restore\n", n)
+	return err
+}
+
 // printSkips lists the blocks an optional feature skipped, so a manual save
 // or restore never looks fully successful when it was not.
 func printSkips(w io.Writer, what string, skips []snapshot.Skip) error {
@@ -213,10 +223,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return restoreErr
 		}
 		_, printErr := fmt.Fprintf(stdout, "Generation %d: journal %s (instance %s)\n", result.Generation, result.Outcome, result.InstanceID)
-		if result.Native != 0 {
-			_, err := fmt.Fprintf(stdout, "%d sessions kept from Rex's own restore\n", result.Native)
-			printErr = errors.Join(printErr, err)
-		}
+		printErr = errors.Join(printErr, printNative(stdout, result.Native))
 		keys := make([]string, 0, len(result.IDMap))
 		for source := range result.IDMap {
 			keys = append(keys, string(source))
@@ -245,6 +252,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return json.NewEncoder(stdout).Encode(status)
 	}
 	_, err = fmt.Fprintf(stdout, "Generation %d (last-known-good %d)\nServer %s\nHost %s, captured instance %s\nRex %s (%s)\n%d sessions, %d windows, %d blocks, %d unsupported\nRecovery: %s\n%s\nJournal %s (instance %s)\n", status.Generation, status.LastKnownGood, status.Server, status.HostID, status.InstanceID, status.RexVersion, status.Commit, status.Sessions, status.Windows, status.Blocks, status.Unsupported, recoveryText(status.Recovery), rexAPIText(status.RexAPI), status.Journal.Outcome, status.Journal.InstanceID)
+	err = errors.Join(err, printNative(stdout, status.Journal.Native))
 	for _, id := range status.Journal.MissingSessions {
 		_, printErr := fmt.Fprintf(stdout, "Missing completed session %s\n", id)
 		err = errors.Join(err, printErr)

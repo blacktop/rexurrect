@@ -208,12 +208,9 @@ func (c Client) captureNode(ctx context.Context, session snapshot.LiveID, n view
 func (c Client) captureCWD(ctx context.Context, session, block snapshot.LiveID, report *snapshot.Report) (string, error) {
 	for attempt := range cwdAttempts {
 		if attempt != 0 {
-			timer := time.NewTimer(200 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
+			pause(ctx, 200*time.Millisecond)
+			if ctx.Err() != nil {
 				return "", ctx.Err()
-			case <-timer.C:
 			}
 		}
 		cwd, err := c.terminalCWD(ctx, session, block)

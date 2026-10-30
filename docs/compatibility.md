@@ -458,25 +458,50 @@ default shell, whatever it ran before. `rex server run --restore=false`
 starts without that snapshot and saves none.
 
 A restore, manual or automatic, lists the live sessions after resolving any
-outstanding create and before creating anything. A saved session whose ID is
-live is recorded in the journal with outcome `native` and an ID map from each
-saved ID to itself, covering every window, layer, split, and block that Rex
-brought back. Nothing is created, configured, replayed, or typed for it, and
-its receipts stay bound to the unchanged block IDs. Every other saved session
-is created as before, so a session destroyed after the last save, which Rex's
-snapshot no longer holds, is still recreated from rexurrect's generation. A
-`native` record is only valid as a session's first record and only with
-unchanged IDs; `status`, `restore`, and `auto` report the count as `native`
-(JSON) and "kept from Rex's own restore" (text), and the journal outcome is
-`complete` once every session is native or complete.
+outstanding create and before creating anything, when some saved session
+still has no journal record. A saved session whose ID is live is recorded in
+the journal with outcome `native` and an ID map from each saved ID that is
+live to itself. Rex creates restored blocks in the background after the
+server answers, so the record waits until Rex is done: every pane in the
+capture reports its working directory and nothing in the session has changed
+for two seconds (a saved session without panes is done once it is live and
+quiet). Rex's own snapshot is newer than the saved generation, so panes added
+after the save come back and panes closed after it stay closed, which is why
+the saved inventory alone cannot say when Rex is done; the automatic cycle
+accepts that live state and the next save records it. The server instance is checked
+again right before the record is written. The wait is bounded at 30 seconds per
+session, after which the restore fails with "the Rex server is still restoring
+session", which a later cycle retries. Nothing is created, configured,
+replayed, or typed for a native session, and its receipts stay bound to the
+unchanged block IDs. Every other saved session is created as before, so a
+session destroyed after the last save, which Rex's snapshot no longer holds,
+is still recreated from rexurrect's generation.
+
+An explicit `restore`, with or without `--generation`, keeps a live session
+only if it equals the selected generation, whether that generation has no
+journal yet or an earlier cycle already recorded the session as `native`.
+Otherwise it is refused ("differs from generation N …") before any journal is
+written or changed, so it neither reports completion over a different layout
+nor creates a copy, and the automatic cycle is unaffected. A fresh journal is
+written only after that decision, so a refused or interrupted explicit restore
+leaves none behind. While the session has no native record, the refusal offers
+to destroy it so the saved layout can be recreated; once it is recorded, a
+`native` record is terminal and the refusal only suggests a save, because a
+destroyed recorded session is reported missing rather than recreated.
+
+A `native` record is only valid as a session's first record and only with
+unchanged IDs; it may omit saved resources Rex no longer holds. Like a `complete`
+record, it is checked against the live server afterwards: `status` lists a
+vanished native session under `missing_sessions` and reports
+`complete_missing`, and a retried restore refuses to continue around it.
+`status`, `restore`, and `auto` report the count as `native` (JSON) and
+"kept from Rex's own restore" (text), and the journal outcome is `complete`
+once every session is native or complete.
 
 The private-server tests start their servers with `--restore=false` so a
-restart still yields an empty server; `TestNativeRestorePrivateServer` runs
-with the snapshot on and proves that a restart keeps both fixture sessions
-under their IDs with a zero recovery count, that a repeated cycle is
-`same_instance`, and that a session destroyed before a restart is recreated
-beside the one Rex restored. The suite therefore needs a Rex build whose
-`rex server run` accepts `--restore`.
+restart still yields an empty server; `TestNativeRestorePrivateServer` turns
+the snapshot on and covers the behaviour above against a real restart. The
+suite therefore needs a Rex build whose `rex server run` accepts `--restore`.
 
 ## Automatic cycle (S2a)
 

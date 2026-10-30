@@ -224,4 +224,22 @@ func TestJournalNativeRecords(t *testing.T) {
 	if err := s.Record(e, &intent, "session", marker, "native", snapshot.IDMap{"session": "session"}); err == nil {
 		t.Fatal("native after intent was accepted")
 	}
+	// A native record maps the saved resources that are live; Rex's newer
+	// snapshot may legitimately lack ones deleted after the save.
+	rich := fixture()
+	rich.Snapshot.Sessions = []snapshot.Session{{ID: "session", ActiveWindow: "window", Windows: []snapshot.Window{{ID: "window", LayerID: "layer", Focus: "block", Layout: snapshot.Node{Block: &snapshot.Block{ID: "block", CWD: "/"}}}}}}
+	richStore := openStore(t)
+	published, err := richStore.Publish(rich, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial := NewJournal(published, published.HostID, published.InstanceID)
+	err = richStore.Record(published, &partial, "session", marker, "native", snapshot.IDMap{"session": "session", "window": "window"})
+	if status := partial.Status(published); err != nil || status.Native != 1 || status.Outcome != "complete" {
+		t.Fatalf("native record over a deleted block: %v %+v", err, status)
+	}
+	headless := NewJournal(published, published.HostID, published.InstanceID)
+	if err := richStore.Record(published, &headless, "session", marker, "native", snapshot.IDMap{"window": "window"}); err == nil {
+		t.Fatal("native record without its session was accepted")
+	}
 }

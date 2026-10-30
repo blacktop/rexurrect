@@ -439,6 +439,24 @@ func TestAutoCyclePrivateServerRecovery(t *testing.T) {
 	}
 }
 
+// identity maps every saved ID of s to itself, the mapping a native restore
+// is expected to leave behind.
+func identity(t *testing.T, s snapshot.Snapshot) snapshot.IDMap {
+	t.Helper()
+	inventory, err := s.Inventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make(snapshot.IDMap, len(inventory))
+	for id := range inventory {
+		ids[id] = snapshot.LiveID(id)
+	}
+	return ids
+}
+
+// seedBlockedJournal publishes e twice into dir and journals every session on
+// instance up to outcome: pending, uncertain, complete_missing (the first
+// session's live ID is wrong), or native (Rex restored them itself).
 func seedBlockedJournal(t *testing.T, dir string, e state.Envelope, instance, outcome string) {
 	t.Helper()
 	store, err := state.Open(dir)
@@ -462,6 +480,12 @@ func seedBlockedJournal(t *testing.T, dir string, e state.Envelope, instance, ou
 		if err != nil {
 			t.Fatal(err)
 		}
+		if outcome == "native" {
+			if err := store.Record(e, &j, session.ID, marker, "native", identity(t, snapshot.Single(session))); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
 		if err := store.Record(e, &j, session.ID, marker, "intent", nil); err != nil {
 			t.Fatal(err)
 		}
@@ -473,13 +497,7 @@ func seedBlockedJournal(t *testing.T, dir string, e state.Envelope, instance, ou
 		}
 		ids := snapshot.IDMap{session.ID: snapshot.LiveID(session.ID)}
 		if outcome == "complete_missing" {
-			inventory, err := (snapshot.Snapshot{Version: snapshot.Version, Sessions: []snapshot.Session{session}}).Inventory()
-			if err != nil {
-				t.Fatal(err)
-			}
-			for id := range inventory {
-				ids[id] = snapshot.LiveID(id)
-			}
+			ids = identity(t, snapshot.Single(session))
 			if i == 0 {
 				ids[session.ID] = "missing-completed-session"
 			}

@@ -78,12 +78,9 @@ func (c Client) command(ctx context.Context, args ...string) ([]byte, error) {
 		if attempt == attempts {
 			return nil, fmt.Errorf("after %d attempts: %w", attempt, err)
 		}
-		timer := time.NewTimer(readRetryDelay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		pause(ctx, readRetryDelay)
+		if ctx.Err() != nil {
 			return nil, errors.Join(err, ctx.Err())
-		case <-timer.C:
 		}
 	}
 }
@@ -187,4 +184,14 @@ func validMethod(method string) bool {
 		return false
 	}
 	return true
+}
+
+// pause waits for d, or less when ctx ends first.
+func pause(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+	case <-timer.C:
+	}
 }

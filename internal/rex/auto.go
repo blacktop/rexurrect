@@ -107,7 +107,7 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 		if sameInstance {
 			out.State = "same_instance"
 		} else {
-			restored, restoreErr := c.restoreSaved(ctx, store, current.Envelope, target)
+			restored, restoreErr := c.restoreSaved(ctx, store, current.Envelope, target, acceptLiveState)
 			out.CWDSubstitutions = restored.CWDSubstitutions
 			out.NotResumed = restored.NotResumed
 			out.ScrollbackSkipped = restored.ScrollbackSkipped
@@ -155,12 +155,7 @@ func (c Client) waitAvailable(ctx context.Context, wait time.Duration) (serverId
 			return id, nil
 		}
 		last = err
-		timer := time.NewTimer(autoPollInterval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-		case <-timer.C:
-		}
+		pause(ctx, autoPollInterval)
 	}
 	return serverIdentity{}, fmt.Errorf("no reachable Rex server: %w", errors.Join(ctx.Err(), last))
 }

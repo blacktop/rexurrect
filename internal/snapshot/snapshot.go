@@ -309,6 +309,11 @@ func HomeCWD() (string, error) {
 
 // Compare requires a total, one-to-one, kind-preserving map. It normalizes
 // working directories and translates identities, never matching display labels.
+// Single wraps one session as the snapshot that Inventory and Compare take.
+func Single(session Session) Snapshot {
+	return Snapshot{Version: Version, Sessions: []Session{session}}
+}
+
 func Compare(want, got Snapshot, ids IDMap) error {
 	wanted, err := want.Inventory()
 	if err != nil {

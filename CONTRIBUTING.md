@@ -39,9 +39,9 @@ just check
 ```
 
 It runs formatting, vet, and tests against private Rex servers, including a
-The private servers start with `--restore=false`, so the installed `rex` must
-accept that flag (server build 0.0.1793299046 or later).
-temporary LaunchAgent with a unique label. The native checks need a real user
+temporary LaunchAgent with a unique label. The private servers start with
+`--restore=false`, so the installed `rex` must accept that flag (server build
+0.0.1793299046 or later). The native checks need a real user
 session and take several minutes; the launchd test waits through real timer
 intervals.
 
