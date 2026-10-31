@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/blacktop/rexurrect/internal/rex"
 	"github.com/blacktop/rexurrect/internal/rexbin"
 	"github.com/blacktop/rexurrect/internal/snapshot"
+	"github.com/blacktop/rexurrect/internal/state"
 )
 
 var version = "dev"
@@ -40,6 +42,54 @@ func printNative(w io.Writer, n int) error {
 	}
 	_, err := fmt.Fprintf(w, "%d sessions kept from Rex's own restore\n", n)
 	return err
+}
+
+func deliveryKind(kind string) string {
+	if kind == state.DeliveryReceipt {
+		return "resume command"
+	}
+	return "foreground command"
+}
+
+// printDeliveries says what became of each saved command in a pane Rex
+// restored itself: run, typed and awaiting Enter, not delivered, or unknown.
+func printDeliveries(w io.Writer, deliveries []state.Delivery) error {
+	var err error
+	for _, d := range deliveries {
+		kind := deliveryKind(d.Kind)
+		var line string
+		switch d.Outcome {
+		case state.DeliveryResumed:
+			line = fmt.Sprintf("Block %s: %s resumed", d.BlockID, kind)
+		case state.DeliveryTypedOnly:
+			line = fmt.Sprintf("Block %s: %s typed, awaiting Enter", d.BlockID, kind)
+		case state.DeliverySkipped:
+			line = fmt.Sprintf("Block %s: %s not delivered (%s)", d.BlockID, kind, d.Reason)
+		case state.DeliveryUncertain:
+			line = fmt.Sprintf("Block %s: %s delivery uncertain (%s)", d.BlockID, kind, d.Reason)
+		default:
+			line = fmt.Sprintf("Block %s: %s delivery in progress", d.BlockID, kind)
+		}
+		_, printErr := fmt.Fprintln(w, line)
+		err = errors.Join(err, printErr)
+	}
+	return err
+}
+
+// deliverySummary counts deliveries by outcome for one-line reports; empty
+// when there were none.
+func deliverySummary(deliveries []state.Delivery) string {
+	counts := make(map[string]int)
+	for _, d := range deliveries {
+		counts[d.Outcome]++
+	}
+	var parts []string
+	for _, item := range []struct{ outcome, label string }{{state.DeliveryResumed, "resumed"}, {state.DeliveryTypedOnly, "awaiting Enter"}, {state.DeliverySkipped, "not delivered"}, {state.DeliveryUncertain, "uncertain"}, {state.DeliveryIntent, "in progress"}} {
+		if n := counts[item.outcome]; n != 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, item.label))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // printSkips lists the blocks an optional feature skipped, so a manual save
@@ -181,6 +231,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			if result.Native != 0 {
 				detail += fmt.Sprintf(", %d kept from Rex's own restore", result.Native)
 			}
+			if summary := deliverySummary(result.Deliveries); summary != "" {
+				detail += ", " + summary
+			}
 			_, textErr = fmt.Fprintf(stderr, "Automatic cycle %s: %s generation %d (%s, %s)\n", result.State, kind, generation, detail, rexAPIText(result.RexAPI))
 		}
 		textErr = errors.Join(textErr, reportRexSubstitution(stderr, result.RexBinarySubstitution))
@@ -242,6 +295,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			printErr = errors.Join(printErr, err)
 		}
 		printErr = errors.Join(printErr, printSkips(stdout, "scrollback not replayed", result.ScrollbackSkipped))
+		printErr = errors.Join(printErr, printDeliveries(stdout, result.Deliveries))
 		return errors.Join(restoreErr, printErr)
 	}
 	status, err := client.Status(ctx, *dir)
@@ -253,6 +307,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	_, err = fmt.Fprintf(stdout, "Generation %d (last-known-good %d)\nServer %s\nHost %s, captured instance %s\nRex %s (%s)\n%d sessions, %d windows, %d blocks, %d unsupported\nRecovery: %s\n%s\nJournal %s (instance %s)\n", status.Generation, status.LastKnownGood, status.Server, status.HostID, status.InstanceID, status.RexVersion, status.Commit, status.Sessions, status.Windows, status.Blocks, status.Unsupported, recoveryText(status.Recovery), rexAPIText(status.RexAPI), status.Journal.Outcome, status.Journal.InstanceID)
 	err = errors.Join(err, printNative(stdout, status.Journal.Native))
+	err = errors.Join(err, printDeliveries(stdout, status.Journal.Deliveries))
 	for _, id := range status.Journal.MissingSessions {
 		_, printErr := fmt.Fprintf(stdout, "Missing completed session %s\n", id)
 		err = errors.Join(err, printErr)

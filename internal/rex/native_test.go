@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -12,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blacktop/rexurrect/internal/receipt"
 	"github.com/blacktop/rexurrect/internal/snapshot"
+	"github.com/blacktop/rexurrect/internal/state"
 )
 
 // A session Rex has listed but not yet populated keeps a stable, empty
@@ -105,12 +108,32 @@ func TestNativeRestorePrivateServer(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "saved")
 	sources := restoreFixture(t, s)
 	slices.Sort(sources)
+	// One pane carries a receipt and another a recorded foreground command,
+	// so the native restore has something to deliver into Rex's bare shells.
+	captured, _, err := s.client.Capture(t.Context(), sources)
+	if err != nil || len(captured.Sessions) != 2 {
+		t.Fatalf("fixture capture: %+v %v", captured, err)
+	}
+	// The foreground record goes to the last pane of the second session; its
+	// first window is closed below, and a closed pane has nowhere to deliver.
+	secondBlocks := captured.Sessions[1].Blocks()
+	receiptBlock, typedBlock := captured.Sessions[0].Blocks()[0].ID, secondBlocks[len(secondBlocks)-1].ID
+	resume := receipt.Receipt{Key: receipt.Key{SessionID: string(captured.Sessions[0].ID), BlockID: string(receiptBlock)}, Host: "claude", Command: "claude", Conversation: "01a18c00-0000-7000-8000-0000000000aa"}
+	if err := s.client.SetReceipt(t.Context(), dir, resume); err != nil {
+		t.Fatal(err)
+	}
+	writeForeground(t, dir, typedBlock, "make test", 0)
 	first, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout)
-	if err != nil || first.State != "first_run" || first.SavedGeneration != 1 {
+	if err != nil || first.State != "first_run" || first.SavedGeneration != 1 || len(first.Deliveries) != 0 {
 		t.Fatalf("first cycle: %+v %v", first, err)
 	}
 	gen1 := loadSaved(t, dir).Envelope
 	saved := gen1.Snapshot
+	for _, b := range saved.Blocks() {
+		if b.ID == receiptBlock && b.AgentResume == nil || b.ID == typedBlock && b.Foreground != "make test" {
+			t.Fatalf("generation 1 lost the saved input of %s: %+v (foreground skipped: %+v)", b.ID, b, first.CaptureForegroundSkipped)
+		}
+	}
 	inventory, err := saved.Inventory()
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +158,24 @@ func TestNativeRestorePrivateServer(t *testing.T) {
 	kept := restartNative(t, s, dir, sources)
 	if kept.State != "new_instance" || kept.RestoreOutcome != "complete" || kept.Native != 2 || kept.Restored != (snapshot.Recovery{}) || kept.SavedGeneration != 2 || kept.InstanceID == first.InstanceID {
 		t.Fatalf("cycle after native restore: %+v", kept)
+	}
+	// Rex brought both panes back as its default shell; without a delivery
+	// hook in that shell nothing is typed, and the log says so per block.
+	if len(kept.Deliveries) != 2 {
+		t.Fatalf("deliveries after native restore: %+v", kept.Deliveries)
+	}
+	for _, d := range kept.Deliveries {
+		kind := state.DeliveryForeground
+		if d.BlockID == receiptBlock {
+			kind = state.DeliveryReceipt
+		}
+		if d.Kind != kind || d.Outcome != state.DeliverySkipped || d.Reason == "" || d.InstanceID != kept.InstanceID {
+			t.Fatalf("delivery %+v", d)
+		}
+		t.Logf("block %s (%s, shell %q): %s", d.BlockID, d.Kind, d.Shell, d.Reason)
+	}
+	if status, err := s.client.Status(t.Context(), dir); err != nil || len(status.Journal.Deliveries) != 0 {
+		t.Fatalf("generation 2 has no restore on this instance, so no deliveries: %+v %v", status.Journal.Deliveries, err)
 	}
 	// Every block of both sessions was saved, so the restore waited for Rex
 	// to finish starting them before recording the sessions as native.
@@ -186,13 +227,29 @@ func TestNativeRestorePrivateServer(t *testing.T) {
 	if journal.Outcome != "complete" || journal.Native != 2 || !maps.Equal(journal.IDMap, want) {
 		t.Fatalf("native journal %s with %d native: %v, want %v", journal.Outcome, journal.Native, journal.IDMap, want)
 	}
+	// The log is read under the state lock and released again, so the
+	// cycles below can take it.
+	logStore, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged, err := logStore.LoadDeliveries(gen1.HostID, kept.InstanceID)
+	if err := errors.Join(err, logStore.Close()); err != nil || !reflect.DeepEqual(logged.Outcomes(), kept.Deliveries) {
+		t.Fatalf("delivery log of this instance: %+v %v, want %+v", logged, err, kept.Deliveries)
+	}
 	if again, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout); err != nil || again.State != "same_instance" || again.Native != 0 || again.SavedGeneration != 3 {
 		t.Fatalf("same-instance cycle after native restore: %+v %v", again, err)
 	}
 	// The current generation matches what Rex restored, so an explicit
-	// restore of it keeps both sessions without creating anything.
-	if current, err := s.client.RestoreSaved(t.Context(), dir, 0); err != nil || current.Outcome != "complete" || current.Native != 2 || len(listSessions(t, s.client)) != liveCount {
-		t.Fatalf("explicit restore of the current generation: %+v %v", current, err)
+	// restore of it keeps both sessions without creating anything. Its
+	// blocks were already delivered on this instance from generation 1, so
+	// the delivery log is reported as it stands and gains nothing.
+	explicit, err := s.client.RestoreSaved(t.Context(), dir, 0)
+	if err != nil || explicit.Outcome != "complete" || explicit.Native != 2 || len(listSessions(t, s.client)) != liveCount {
+		t.Fatalf("explicit restore of the current generation: %+v %v", explicit, err)
+	}
+	if !reflect.DeepEqual(explicit.Deliveries, kept.Deliveries) {
+		t.Fatalf("restoring generation 3 on the same instance changed deliveries: %+v, want %+v", explicit.Deliveries, kept.Deliveries)
 	}
 	// A session destroyed after the last save is absent from Rex's snapshot
 	// too, so the next restart restores one natively and the cycle creates
@@ -232,5 +289,73 @@ func TestNativeRestorePrivateServer(t *testing.T) {
 	}
 	if len(listSessions(t, s.client)) != before {
 		t.Fatal("a refused retry changed the live sessions")
+	}
+}
+
+// A restore interrupted after its native records must still decide the
+// deliveries of those sessions: an explicit retry of the same generation,
+// and the automatic same-instance cycle, both finish them from the journal,
+// and an intent left behind closes as uncertain instead of being resent.
+func TestNativeDeliveryRecovery(t *testing.T) {
+	requireLoginShell(t)
+	s := newIsolatedServerWithSetup(t, func(s *isolatedServer) { s.restore = true })
+	dir := filepath.Join(t.TempDir(), "saved")
+	var created createdSession
+	mustCall(t, s.client, "session.create", map[string]any{"label": "recover", "initial_windows": []createWindow{{Label: "w", Layout: createNode{Block: &createBlock{Flavor: shellFlavor, Label: "agent", Options: shellOptions{Shell: "/bin/sh", Login: new(bool), CWD: s.root}}}}}}, &created)
+	block := created.Windows[0].Blocks[0]
+	resume := receipt.Receipt{Key: receipt.Key{SessionID: string(created.ID), BlockID: string(block)}, Host: "claude", Command: "claude", Conversation: "01a18c00-0000-7000-8000-0000000000bb"}
+	if err := s.client.SetReceipt(t.Context(), dir, resume); err != nil {
+		t.Fatal(err)
+	}
+	if first, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout); err != nil || first.SavedGeneration != 1 {
+		t.Fatalf("first cycle: %+v %v", first, err)
+	}
+	gen1 := loadSaved(t, dir).Envelope
+	kept := restartNative(t, s, dir, []snapshot.LiveID{created.ID})
+	if kept.Native != 1 || len(kept.Deliveries) != 1 || kept.Deliveries[0].Outcome != state.DeliverySkipped {
+		t.Fatalf("cycle after native restore: %+v", kept)
+	}
+	logName := func() string {
+		for name := range savedFiles(t, dir) {
+			if strings.HasPrefix(name, "deliver-") {
+				return filepath.Join(dir, name)
+			}
+		}
+		t.Fatal("no delivery log")
+		return ""
+	}
+	// As if the run had died between the native record and the delivery:
+	// the journal says native, the log says nothing.
+	if err := os.Remove(logName()); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := s.client.RestoreSaved(t.Context(), dir, gen1.Generation)
+	if err != nil || retried.Native != 1 || !reflect.DeepEqual(retried.Deliveries, kept.Deliveries) {
+		t.Fatalf("explicit retry after a lost delivery: %+v %v, want %+v", retried, err, kept.Deliveries)
+	}
+	// As if the run had died after announcing the delivery: the intent
+	// closes as uncertain and the pane is not consulted again.
+	if err := os.Remove(logName()); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := state.NewDeliveryLog(gen1.HostID, kept.InstanceID)
+	intent, _ := state.DeliveryFor(gen1, gen1.Snapshot.Sessions[0].ID, *gen1.Snapshot.Sessions[0].Blocks()[0])
+	intent.Outcome = state.DeliveryIntent
+	if err := errors.Join(store.RecordDelivery(gen1, &log, intent), store.Close()); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout)
+	if err != nil || finished.State != "same_instance" || len(finished.Deliveries) != 1 || finished.Deliveries[0].Outcome != state.DeliveryUncertain || !strings.Contains(finished.Deliveries[0].Reason, "interrupted") {
+		t.Fatalf("same-instance cycle over an open intent: %+v %v", finished, err)
+	}
+	if quiet, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout); err != nil || quiet.State != "same_instance" || len(quiet.Deliveries) != 0 {
+		t.Fatalf("a settled same-instance cycle reported deliveries: %+v %v", quiet, err)
+	}
+	if status, err := s.client.Status(t.Context(), dir); err != nil || len(status.Journal.Deliveries) != 0 {
+		t.Fatalf("status of the current generation, which has no journal here, reports no deliveries: %+v %v", status.Journal.Deliveries, err)
 	}
 }

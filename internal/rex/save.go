@@ -163,7 +163,7 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 	}
 	live, pruneForeground := attachForeground(store, &captured)
 	prune := func(retained state.Current) error {
-		err := store.PruneScrollback(retained)
+		err := errors.Join(store.PruneScrollback(retained), store.PruneDeliveries(id.HostID, id.InstanceID))
 		if pruneForeground {
 			err = errors.Join(err, store.PruneForeground(live))
 		}
@@ -303,6 +303,11 @@ func (c Client) status(ctx context.Context, store *state.Store, current state.Cu
 		return out, err
 	} else {
 		out.Journal = j.Status(e)
+		deliveries, err := store.LoadDeliveries(id.HostID, id.InstanceID)
+		if err != nil {
+			return out, err
+		}
+		out.Journal.Deliveries = deliveries.Outcomes()
 		latest := j.Latest()
 		var completed []snapshot.LiveID
 		for _, session := range e.Snapshot.Sessions {

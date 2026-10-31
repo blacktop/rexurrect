@@ -503,6 +503,93 @@ restart still yields an empty server; `TestNativeRestorePrivateServer` turns
 the snapshot on and covers the behaviour above against a real restart. The
 suite therefore needs a Rex build whose `rex server run` accepts `--restore`.
 
+### Delivering saved input into panes Rex restored
+
+A pane Rex restores itself comes back as a bare default shell: nothing that
+was running in it is started again. For a created pane, rexurrect starts the
+shell with the saved input (a receipt's resume command, which runs, or a
+recorded foreground command, which is only typed). For a native pane that
+input has to be handed to a shell that is already running, and typing into
+it is safe only when the shell is idle at an empty prompt. Rex exposes no
+prompt state (see `docs/.ai/plans/2026-10-30-native-snapshot-coexistence.md`
+for the probes), so the only reliable check is the shell's own: a hook inside
+the shell that reads its line buffer and takes the input in the same step.
+
+What the restore does today is record. Beside the restore journals, one
+delivery log per server instance, `deliver-<sha256(host\0instance)>.json`,
+holds one record per block of a natively restored session that has a
+receipt or a foreground record, published atomically like a journal. The log
+belongs to the instance rather than to a generation because the promise is
+per block per instance: a block delivered from one generation is never
+delivered again when a later generation is restored on the same instance,
+and each record names the generation its input came from. A block gets one
+terminal outcome per server instance:
+
+| outcome | meaning |
+|---|---|
+| `intent` | written before any input is requested from the shell |
+| `resumed` | the shell ran the resume command (receipts, fish only) |
+| `typed_only` | the shell put the command at its prompt; Enter is the user's |
+| `skipped` | nothing reached the shell; `reason` says why |
+| `uncertain` | input was requested but never acknowledged; never resent |
+
+Each record also carries the block's kind (`receipt` or `foreground`), the
+exact input line, and the shell observed at the prompt. `resumed` and
+`typed_only` are only valid after an `intent` with the same generation and
+input; a `skipped` needs none, since nothing was sent. A record is checked
+against the saved input of its block when it is written, and the log's
+transitions are checked whenever it is read, so a record from a generation
+the store no longer retains stays valid. Once a block has a terminal record,
+no restore on that instance touches it again, so a lost acknowledgement
+cannot make a command run twice; a new server instance starts a new log,
+and the save prunes the logs of earlier instances. The receipt itself is
+kept in either case.
+
+Deliveries are decided from the journal's `native` records, not from what
+one run happened to keep, so a run that dies after writing its native
+records does not lose them: an explicit `restore` of the same generation,
+or the next automatic cycle on the same instance (which finds the newest
+journal of that instance and finishes whatever is undecided), records the
+missing outcomes. An `intent` such a run left behind is closed as
+`uncertain` with reason "interrupted before the shell acknowledged the
+input" without reading the pane again, never resent. The automatic cycle
+reports deliveries only in a cycle that recorded some.
+
+The gate that runs before anything is requested reads
+`com.superlogical.terminal.process` only. The foreground process must be a
+shell (fish, zsh, bash, sh and the usual others) that either is the pane's
+child process or hangs from it through a complete chain of `login`
+processes ending at that child. Rex leaves the chain out when it cannot
+report all of it, and a shell with an unknown parent could be running under
+anything, so a missing or mismatched chain is skipped as `pane state
+unknown: process chain to the pane's child is incomplete`, as are a missing
+foreground or child and an unreadable pane. A foreground program that is
+not a shell is `busy: <name> is running`; a shell under something other
+than login is `busy: <shell> runs under <name>`. Only fish and zsh can take
+input: fish runs a receipt and types a foreground command, zsh types both
+and reports `typed_only`, every other shell is skipped as not supported.
+Until the delivery hook for the observed shell is installed, a supported
+shell is skipped with `no delivery hook in this shell; install it with
+rexurrect hook <shell>`. The hooks themselves, and the request, trigger and
+acknowledgement between rexurrect and the shell, are the next slice; the
+gate, the log and the reporting are in place so that no automatic input is
+ever sent without a record saying what and where.
+
+`restore`, `status` and `auto` report the records as `deliveries` (JSON).
+The text forms are "Block B: resume command resumed", "… typed, awaiting
+Enter", "… not delivered (reason)", "… delivery uncertain (reason)", and the
+automatic cycle's one-line summary counts them ("1 awaiting Enter, 1 not
+delivered"). `TestNativeRestorePrivateServer` saves a receipt and a
+foreground record before the restart, checks that both blocks are logged as
+skipped with a reason on the new instance, and that an explicit restore of
+a later generation on that instance adds nothing; `TestNativeDeliveryRecovery`
+removes the log after a native restart and checks that an explicit retry
+rebuilds it, that the same-instance cycle closes a seeded intent as
+uncertain, and that a settled cycle reports nothing; `TestDeliverNativeGate`
+and `TestDeliverNativeAcrossGenerations` cover every skip reason, the
+process-chain rules, the cross-generation guard and intent reconciliation
+against a fake `rex`.
+
 ## Automatic cycle (S2a)
 
 `auto` runs one save/restore cycle. It requires the same explicit Unix socket,

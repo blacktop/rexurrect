@@ -257,7 +257,13 @@ func TestScrollbackCaptureAndReplayPrivateServer(t *testing.T) {
 // openState opens a fresh state store that closes with the test.
 func openState(t *testing.T) *state.Store {
 	t.Helper()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state"))
+	return openStateAt(t, filepath.Join(t.TempDir(), "state"))
+}
+
+// openStateAt opens dir as a state store and closes it when the test ends.
+func openStateAt(t *testing.T, dir string) *state.Store {
+	t.Helper()
+	store, err := state.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

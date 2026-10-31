@@ -27,6 +27,7 @@ type AutoResult struct {
 	RestoreOutcome           string                     `json:"restore_outcome"`
 	Restored                 snapshot.Recovery          `json:"restored,omitzero"`
 	Native                   int                        `json:"native,omitempty"`
+	Deliveries               []state.Delivery           `json:"deliveries,omitempty"`
 	SavedGeneration          uint64                     `json:"saved_generation,omitempty"`
 	Reason                   string                     `json:"reason,omitempty"`
 	CWDSubstitutions         []state.CWDSubstitution    `json:"cwd_substitutions,omitempty"`
@@ -106,6 +107,16 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 		}
 		if sameInstance {
 			out.State = "same_instance"
+			// A restore interrupted after its native records left their
+			// deliveries undecided; finish them from the journal that the
+			// restart was recovered from, which later saves have superseded.
+			deliveries, changed, err := c.finishDeliveries(ctx, store, target)
+			if err != nil {
+				return out, err
+			}
+			if changed {
+				out.Deliveries = deliveries
+			}
 		} else {
 			restored, restoreErr := c.restoreSaved(ctx, store, current.Envelope, target, acceptLiveState)
 			out.CWDSubstitutions = restored.CWDSubstitutions
@@ -113,6 +124,7 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 			out.ScrollbackSkipped = restored.ScrollbackSkipped
 			out.Restored = restored.Recovery
 			out.Native = restored.Native
+			out.Deliveries = restored.Deliveries
 			if restored.Outcome != "" {
 				out.RestoreOutcome = restored.Outcome
 			}
@@ -141,6 +153,17 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 		out.Reason = "unchanged"
 	}
 	return out, nil
+}
+
+// finishDeliveries records any delivery still undecided for the sessions this
+// instance's restore recorded as native. It changes nothing when every block
+// already has a terminal record, which is the usual case.
+func (c Client) finishDeliveries(ctx context.Context, store *state.Store, target serverIdentity) ([]state.Delivery, bool, error) {
+	e, j, ok, err := store.LatestJournal(target.HostID, target.InstanceID)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return c.deliverNative(ctx, store, e, j.Latest(), target)
 }
 
 // Availability is established only by whoami on the explicit, non-autostarting

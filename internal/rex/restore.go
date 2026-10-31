@@ -64,12 +64,14 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 	out = j.Status(e)
 	var scrollbackSkipped []snapshot.Skip
 	var recovery snapshot.Recovery
+	var deliveries []state.Delivery
 	defer func() {
 		acknowledged := out.IDMap
 		out = j.Status(e)
 		maps.Copy(out.IDMap, acknowledged)
 		out.ScrollbackSkipped = scrollbackSkipped
 		out.Recovery = recovery
+		out.Deliveries = deliveries
 	}()
 
 	latest := j.Latest()
@@ -111,6 +113,9 @@ func (c Client) restoreSaved(ctx context.Context, store *state.Store, e state.En
 		return out, err
 	}
 	latest = j.Latest()
+	if deliveries, _, err = c.deliverNative(ctx, store, e, latest, target); err != nil {
+		return out, err
+	}
 	// Scrollback replay is decided once, before any create, so a lost
 	// acknowledgement can never start a second replay for the same block. Only
 	// the sessions this invocation creates take part: completed and in-flight

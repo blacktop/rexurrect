@@ -77,6 +77,9 @@ type JournalStatus struct {
 	// generation's journal keeps its format.
 	ScrollbackSkipped []snapshot.Skip   `json:"scrollback_skipped,omitempty"`
 	Recovery          snapshot.Recovery `json:"recovery,omitzero"`
+	// Deliveries come from the delivery log beside the journal: what became
+	// of the saved input of each block in a session Rex restored itself.
+	Deliveries []Delivery `json:"deliveries,omitempty"`
 }
 
 func NewOperationMarker() (string, error) {
@@ -92,8 +95,13 @@ func NewJournal(e Envelope, host, instance string) Journal {
 }
 
 func journalName(generation uint64, host, instance string) string {
+	return identityName("restore", generation, host, instance)
+}
+
+// identityName names a per-generation file bound to one server instance.
+func identityName(prefix string, generation uint64, host, instance string) string {
 	identity := sha256.Sum256([]byte(host + "\x00" + instance))
-	return fmt.Sprintf("restore-%020d-%x.json", generation, identity)
+	return fmt.Sprintf("%s-%020d-%x.json", prefix, generation, identity)
 }
 
 // LoadGeneration also validates the current pointer, so an unreferenced
@@ -243,6 +251,48 @@ func (s *Store) LoadJournal(e Envelope, host, instance string) (Journal, error) 
 		return j, err
 	}
 	return j, j.validate(e, host, instance)
+}
+
+// LatestJournal finds the newest generation this server instance has a
+// restore journal for, with that journal: the generation a restart was
+// recovered from, which later saves on the same instance have superseded as
+// current. ok is false when the instance has no journal or its generation
+// is no longer retained.
+func (s *Store) LatestJournal(host, instance string) (e Envelope, j Journal, ok bool, err error) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return e, j, false, err
+	}
+	var newest uint64
+	for _, entry := range entries {
+		var generation uint64
+		if entry.IsDir() || entry.Name() != journalName(parseGeneration(entry.Name(), &generation), host, instance) {
+			continue
+		}
+		newest = max(newest, generation)
+	}
+	if newest == 0 {
+		return e, j, false, nil
+	}
+	e, err = s.load(newest)
+	if errors.Is(err, os.ErrNotExist) {
+		return e, j, false, nil
+	}
+	if err != nil {
+		return e, j, false, err
+	}
+	j, err = s.LoadJournal(e, host, instance)
+	return e, j, err == nil, err
+}
+
+// parseGeneration reads the generation number out of a restore journal
+// name into out and returns it; zero when the name is not one.
+func parseGeneration(name string, out *uint64) uint64 {
+	var identity string
+	if _, err := fmt.Sscanf(name, "restore-%020d-%s", out, &identity); err != nil {
+		*out = 0
+	}
+	return *out
 }
 
 func (s *Store) WriteJournal(e Envelope, j Journal) error {
