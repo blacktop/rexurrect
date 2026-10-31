@@ -568,12 +568,63 @@ not a shell is `busy: <name> is running`; a shell under something other
 than login is `busy: <shell> runs under <name>`. Only fish and zsh can take
 input: fish runs a receipt and types a foreground command, zsh types both
 and reports `typed_only`, every other shell is skipped as not supported.
-Until the delivery hook for the observed shell is installed, a supported
-shell is skipped with `no delivery hook in this shell; install it with
-rexurrect hook <shell>`. The hooks themselves, and the request, trigger and
-acknowledgement between rexurrect and the shell, are the next slice; the
-gate, the log and the reporting are in place so that no automatic input is
-ever sent without a record saying what and where.
+Without the hook in the observed shell, a supported shell is skipped with
+`no delivery hook in this shell; install it with rexurrect hook <shell>`; a
+mailbox the hook left unreadable or not private is that pane's skip
+(`delivery mailbox unusable: ...`), never a failure of the restore.
+
+The hook is part of what `rexurrect hook zsh|fish` prints, after the
+foreground recorder, and installs only in an interactive outermost pane
+shell; a shell that replaces itself with `exec`, which keeps the pid,
+installs again and announces itself afresh. It owns a mailbox
+`<state>/deliver/<block uuid>/` (mode 0700). Once its handler is installed
+it publishes `ready` ("<pid> <shell> <hook id>", the id new for every
+installation); a zsh hook also creates and keeps open `fifo`; on exit it
+removes the mailbox. rexurrect never types into the pane. For a block that
+passed the gate it reads the hook's announcement, waiting up to three
+seconds for one when any pane has a mailbox at all (the shell may still be
+sourcing its config) and not at all when no hook is installed anywhere,
+requires the announced hook to match the pane's shell and pid, records `intent` with a fresh attempt id, checks the server
+instance, the pane and the announcement again, publishes `request`
+("<attempt> <hook id> <mode>\n<command>\n", mode `run` for a receipt in
+fish, else `type`), and wakes the hook: SIGURG to that fish pid, a signal
+fish ignores unless a handler is installed, so a shell that lost the hook
+is never affected; or one line into the zsh fifo. The hook claims the
+request by renaming it, so exactly one of the hook and rexurrect ever owns
+it, reads its own line buffer (`commandline --current-buffer`, `$BUFFER`)
+and, only if the request is addressed to its own hook id and the buffer is
+empty, puts the command there, running it for mode `run` (`commandline -f
+execute`; zsh cannot accept a line from a handler before the next
+keystroke, so it only types), then publishes `ack` ("<attempt>
+<outcome>": `delivered:run`, `delivered:type`, `skipped:pending_input` or
+`rejected:other_hook`). rexurrect waits up to two seconds for an
+acknowledgement of its attempt, ignoring any other, and records `resumed`,
+`typed_only` or `skipped` ("the prompt already had input", "the hook in
+the pane is not the one that announced itself"). When no acknowledgement
+arrives, or when a later run finds an `intent` left open, the attempt is
+settled from the mailbox: revoking the request succeeds only if the hook
+never claimed it, and that is a clean `skipped` ("did not claim the
+request within 2s", "interrupted before the hook claimed the request");
+otherwise an acknowledgement of that attempt decides, and without one the
+attempt is `uncertain` ("no unclaimed request and no acknowledgement of
+this attempt"). A hook that cannot be woken is settled the same way. The
+save prunes mailboxes of blocks that are no longer live once they are a
+minute old, for shells that were killed with the server.
+
+`TestDeliveryHooksPrivateServer` runs the real hooks in fish and zsh panes
+with the hook loaded from the pane's shell config: the receipt is resumed
+(fish) or typed (zsh), the foreground command is typed and not run, a pane
+with pending input is left untouched, the screens agree with the records,
+and a second pass asks nothing. `TestDeliveryHookBoundariesPrivateServer`
+replaces a pane's shell with `exec <shell> --no-config`, which keeps the
+pid and the stale announcement but drops the handler, and checks the pane
+is left alive and undelivered; seeds an acknowledgement of another attempt
+and checks it is ignored; and announces a hook id the pane's hook does not
+have and checks the hook rejects the request.
+`TestDeliverNativeSettlesInterruptedAttempts` covers every mailbox state an
+open intent can be found in. `TestNativeRestorePrivateServer` installs the
+fish hook in the private home, so when the account's default shell is
+fish the restart itself resumes the receipt and types the recorded command.
 
 `restore`, `status` and `auto` report the records as `deliveries` (JSON).
 The text forms are "Block B: resume command resumed", "… typed, awaiting

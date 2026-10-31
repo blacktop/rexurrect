@@ -78,7 +78,10 @@ before), or run `rexurrect save --scrollback` yourself; see
 ## Running commands
 
 Add `eval "$(rexurrect hook zsh)"` to `~/.zshrc`, or
-`rexurrect hook fish | source` to `~/.config/fish/config.fish`.
+`rexurrect hook fish | source` to `~/.config/fish/config.fish`. The same hook
+lets a pane that Rex restored itself take its saved command back: fish runs
+an agent's resume command and types a recorded command, zsh types both and
+leaves Enter to you, and either shell declines while you are typing.
 While a command runs in a pane, the hook records the line you typed; when it
 exits, the record goes away. After a restart, a pane that was running
 something comes back with that line typed at its prompt, ready for Enter and

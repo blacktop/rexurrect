@@ -9,7 +9,9 @@ import (
 	"time"
 )
 
-const awaitScript = `n=$(cat "$COUNTER" 2>/dev/null || echo 0); n=$((n+1)); printf '%s' "$n" > "$COUNTER"
+// The counter is published by rename, so a read never sees it truncated
+// between a call's truncate and write.
+const awaitScript = `n=$(cat "$COUNTER" 2>/dev/null || echo 0); n=$((n+1)); printf '%s' "$n" > "$COUNTER.tmp" && mv -f "$COUNTER.tmp" "$COUNTER"
 if [ "$n" -lt "$READY_AT" ]; then echo "not yet" >&2; exit 1; fi
 printf '{"host_id":"host","instance_id":"inst","rex_version":"v","pid":%s}\n' "$SERVER_PID"
 `

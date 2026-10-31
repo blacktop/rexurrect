@@ -165,7 +165,7 @@ func (c Client) save(ctx context.Context, store *state.Store, allowEmpty bool, e
 	prune := func(retained state.Current) error {
 		err := errors.Join(store.PruneScrollback(retained), store.PruneDeliveries(id.HostID, id.InstanceID))
 		if pruneForeground {
-			err = errors.Join(err, store.PruneForeground(live))
+			err = errors.Join(err, store.PruneForeground(live), store.PruneDeliveryMailboxes(live))
 		}
 		return err
 	}

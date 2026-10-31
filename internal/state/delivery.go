@@ -62,6 +62,9 @@ type Delivery struct {
 	Input   string `json:"input"`
 	Outcome string `json:"outcome"`
 	Reason  string `json:"reason,omitempty"`
+	// Attempt names the request an intent published, so its acknowledgement
+	// and its revocation can be told from any other attempt's.
+	Attempt string `json:"attempt,omitempty"`
 }
 
 // Terminal reports whether d ends the block's delivery on this instance.
@@ -143,13 +146,16 @@ func (l DeliveryLog) validate(host, instance string) error {
 		if previous.Terminal() {
 			return errors.New("delivery recorded after a terminal outcome")
 		}
-		if previous.Outcome == DeliveryIntent && (previous.Generation != d.Generation || previous.Input != d.Input || previous.Kind != d.Kind) {
+		if previous.Outcome == DeliveryIntent && (previous.Generation != d.Generation || previous.Input != d.Input || previous.Kind != d.Kind || previous.Attempt != d.Attempt) {
 			return errors.New("delivery outcome does not match its intent")
+		}
+		if d.Attempt != "" && !ValidDeliveryAttempt(d.Attempt) || previous.Outcome == "" && d.Outcome != DeliveryIntent && d.Attempt != "" {
+			return errors.New("invalid delivery attempt")
 		}
 		var ok bool
 		switch d.Outcome {
 		case DeliveryIntent:
-			ok = previous.Outcome == "" && d.Reason == ""
+			ok = previous.Outcome == "" && d.Reason == "" && d.Attempt != ""
 		case DeliveryResumed:
 			ok = previous.Outcome == DeliveryIntent && d.Reason == "" && d.Kind == DeliveryReceipt
 		case DeliveryTypedOnly:

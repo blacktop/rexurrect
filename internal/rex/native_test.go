@@ -104,8 +104,14 @@ func awaitListed(t *testing.T, s *isolatedServer, want []snapshot.LiveID) error 
 // and never produce a second copy.
 func TestNativeRestorePrivateServer(t *testing.T) {
 	requireLoginShell(t)
-	s := newIsolatedServerWithSetup(t, func(s *isolatedServer) { s.restore = true })
 	dir := filepath.Join(t.TempDir(), "saved")
+	// Rex restores every pane as the account's default shell through login;
+	// when that shell is fish, the private home's config loads the delivery
+	// hook, so the restart exercises delivery end to end.
+	s := newIsolatedServerWithSetup(t, func(s *isolatedServer) {
+		s.restore = true
+		installHook(t, s, "fish", dir)
+	})
 	sources := restoreFixture(t, s)
 	slices.Sort(sources)
 	// One pane carries a receipt and another a recorded foreground command,
@@ -159,20 +165,24 @@ func TestNativeRestorePrivateServer(t *testing.T) {
 	if kept.State != "new_instance" || kept.RestoreOutcome != "complete" || kept.Native != 2 || kept.Restored != (snapshot.Recovery{}) || kept.SavedGeneration != 2 || kept.InstanceID == first.InstanceID {
 		t.Fatalf("cycle after native restore: %+v", kept)
 	}
-	// Rex brought both panes back as its default shell; without a delivery
-	// hook in that shell nothing is typed, and the log says so per block.
+	// Rex brought both panes back as its default shell. A fish shell loaded
+	// the hook, so the receipt ran and the foreground command was typed;
+	// any other shell has no hook here and the log says so per block.
 	if len(kept.Deliveries) != 2 {
 		t.Fatalf("deliveries after native restore: %+v", kept.Deliveries)
 	}
 	for _, d := range kept.Deliveries {
-		kind := state.DeliveryForeground
+		kind, want := state.DeliveryForeground, state.DeliveryTypedOnly
 		if d.BlockID == receiptBlock {
-			kind = state.DeliveryReceipt
+			kind, want = state.DeliveryReceipt, state.DeliveryResumed
 		}
-		if d.Kind != kind || d.Outcome != state.DeliverySkipped || d.Reason == "" || d.InstanceID != kept.InstanceID {
-			t.Fatalf("delivery %+v", d)
+		if d.Shell != "fish" {
+			want = state.DeliverySkipped
 		}
-		t.Logf("block %s (%s, shell %q): %s", d.BlockID, d.Kind, d.Shell, d.Reason)
+		if d.Kind != kind || d.Outcome != want || (want == state.DeliverySkipped) != (d.Reason != "") || d.InstanceID != kept.InstanceID {
+			t.Fatalf("delivery %+v, want %s", d, want)
+		}
+		t.Logf("block %s (%s, shell %q): %s %s", d.BlockID, d.Kind, d.Shell, d.Outcome, d.Reason)
 	}
 	if status, err := s.client.Status(t.Context(), dir); err != nil || len(status.Journal.Deliveries) != 0 {
 		t.Fatalf("generation 2 has no restore on this instance, so no deliveries: %+v %v", status.Journal.Deliveries, err)
@@ -256,6 +266,10 @@ func TestNativeRestorePrivateServer(t *testing.T) {
 	// the other from the saved generation.
 	mustCall(t, s.client, "session.destroy", map[string]any{"session_id": sources[1]}, nil)
 	gen3 := loadSaved(t, dir).Envelope
+	// Rex persists a destroy asynchronously; a server stopped right after
+	// one has written a snapshot that still held the session and restored
+	// it again (seen once in a full gate). Give it a moment first.
+	time.Sleep(2 * time.Second)
 	mixed := restartNative(t, s, dir, sources[:1])
 	if mixed.State != "new_instance" || mixed.RestoreOutcome != "complete" || mixed.Native != 1 || mixed.Restored == (snapshot.Recovery{}) || mixed.SavedGeneration != 4 {
 		t.Fatalf("mixed cycle: %+v", mixed)
@@ -344,12 +358,12 @@ func TestNativeDeliveryRecovery(t *testing.T) {
 	}
 	log := state.NewDeliveryLog(gen1.HostID, kept.InstanceID)
 	intent, _ := state.DeliveryFor(gen1, gen1.Snapshot.Sessions[0].ID, *gen1.Snapshot.Sessions[0].Blocks()[0])
-	intent.Outcome = state.DeliveryIntent
+	intent.Outcome, intent.Attempt = state.DeliveryIntent, "0000000000000000000000000000000b"
 	if err := errors.Join(store.RecordDelivery(gen1, &log, intent), store.Close()); err != nil {
 		t.Fatal(err)
 	}
 	finished, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout)
-	if err != nil || finished.State != "same_instance" || len(finished.Deliveries) != 1 || finished.Deliveries[0].Outcome != state.DeliveryUncertain || !strings.Contains(finished.Deliveries[0].Reason, "interrupted") {
+	if err != nil || finished.State != "same_instance" || len(finished.Deliveries) != 1 || finished.Deliveries[0].Outcome != state.DeliveryUncertain || !strings.Contains(finished.Deliveries[0].Reason, "no unclaimed request") {
 		t.Fatalf("same-instance cycle over an open intent: %+v %v", finished, err)
 	}
 	if quiet, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout); err != nil || quiet.State != "same_instance" || len(quiet.Deliveries) != 0 {

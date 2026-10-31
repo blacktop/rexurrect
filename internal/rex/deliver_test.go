@@ -2,11 +2,13 @@ package rex
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blacktop/rexurrect/internal/receipt"
 	"github.com/blacktop/rexurrect/internal/snapshot"
@@ -30,7 +32,9 @@ func deliveryBlock(n int) snapshot.SourceID {
 // files under responses and fails every other call.
 func deliveryClient(t *testing.T, responses string) Client {
 	t.Helper()
-	return scriptClient(t, `case "$8" in
+	return scriptClient(t, `if [ "$6" = whoami ]; then printf '{"host_id":"host","instance_id":"instance","rex_version":"test"}\n'; exit 0; fi
+case "$8" in
+server.version) printf '{"rex_version":"test","commit":"test-commit","api_revision":7}\n' ;;
 com.superlogical.terminal.process)
 	id=$(printf '%s' "$9" | sed -n 's/.*"block_id":"block:\([^"]*\)".*/\1/p')
 	if [ -f "$RESPONSES/$id.json" ]; then cat "$RESPONSES/$id.json"; else echo "process unavailable" >&2; exit 1; fi ;;
@@ -102,6 +106,10 @@ func TestDeliverNativeGate(t *testing.T) {
 		// A login chain that does not end at the reported child is not the
 		// pane's own chain.
 		{snapshot.Block{ID: deliveryBlock(10), CWD: "/", Foreground: "make test"}, ptr(deliveryProcess{Foreground: &paneProcess{Name: "fish", PID: 20}, Child: &paneProcess{Name: "login", PID: 10}, Ancestors: []paneProcess{{Name: "login", PID: 11}}}), "fish", "pane state unknown: process chain to the pane's child is incomplete"},
+		// A mailbox the hook left unusable, or an announcement from another
+		// shell, is that pane's skip; the other panes still get their records.
+		{snapshot.Block{ID: deliveryBlock(12), CWD: "/", Foreground: "make test"}, ptr(loginChain("fish")), "fish", "delivery mailbox unusable: "},
+		{snapshot.Block{ID: deliveryBlock(13), CWD: "/", Foreground: "make test"}, ptr(loginChain("fish")), "fish", "delivery hook belongs to fish 21, not the pane's fish 20"},
 		{snapshot.Block{ID: deliveryBlock(11), CWD: "/"}, ptr(loginChain("fish")), "", ""},
 	}
 	blocks := make([]snapshot.Block, 0, len(cases))
@@ -112,6 +120,15 @@ func TestDeliverNativeGate(t *testing.T) {
 		}
 	}
 	store := openState(t)
+	for block, ready := range map[snapshot.SourceID]string{deliveryBlock(12): "garbage\n", deliveryBlock(13): "21 fish 21.1\n"} {
+		box := filepath.Join(store.Dir(), "deliver", strings.TrimPrefix(string(block), "block:"))
+		if err := os.MkdirAll(box, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(box, "ready"), []byte(ready), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	e, latest := deliveryEnvelope(t, 7, blocks)
 	target := serverIdentity{HostID: "host", InstanceID: "instance"}
 	deliveries, changed, err := c.deliverNative(t.Context(), store, e, latest, target)
@@ -188,7 +205,7 @@ func TestDeliverNativeAcrossGenerations(t *testing.T) {
 		t.Fatal(err)
 	}
 	intent, _ := state.DeliveryFor(gen2, deliverySession, second)
-	intent.Outcome = state.DeliveryIntent
+	intent.Outcome, intent.Attempt = state.DeliveryIntent, "00000000000000000000000000000002"
 	if err := store.RecordDelivery(gen2, &log, intent); err != nil {
 		t.Fatal(err)
 	}
@@ -202,8 +219,10 @@ func TestDeliverNativeAcrossGenerations(t *testing.T) {
 	if !reflect.DeepEqual(gen2Deliveries[0], gen1Deliveries[0]) {
 		t.Fatalf("the receipt block was recorded again from generation 2: %+v", gen2Deliveries[0])
 	}
+	// The intent has no mailbox to settle against, so nothing proves the
+	// request was never claimed: uncertain, with the attempt kept.
 	closed := gen2Deliveries[1]
-	if closed.BlockID != second.ID || closed.Outcome != state.DeliveryUncertain || closed.Generation != 2 || closed.Input != "make test" || !strings.Contains(closed.Reason, "interrupted") {
+	if closed.BlockID != second.ID || closed.Outcome != state.DeliveryUncertain || closed.Generation != 2 || closed.Input != "make test" || closed.Attempt != intent.Attempt || !strings.Contains(closed.Reason, "no unclaimed request") {
 		t.Fatalf("interrupted intent: %+v", closed)
 	}
 	if _, changed, err := c.deliverNative(t.Context(), store, gen2, latest2, target); err != nil || changed {
@@ -212,3 +231,121 @@ func TestDeliverNativeAcrossGenerations(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// An intent an earlier run left behind is settled from its mailbox: a
+// request still unclaimed is revoked and the attempt is a skip; an
+// acknowledgement of that attempt decides; a request the hook claimed
+// without acknowledging, or an acknowledgement of another attempt, leaves
+// the attempt uncertain. The pane is never consulted and nothing is resent.
+func TestDeliverNativeSettlesInterruptedAttempts(t *testing.T) {
+	cases := []struct {
+		name    string
+		files   map[string]string
+		outcome string
+		reason  string
+		left    []string
+	}{
+		{"request unclaimed", map[string]string{"request": "ATTEMPT 7.1 run\nclaude --resume x\n"}, state.DeliverySkipped, "interrupted before the hook claimed the request", nil},
+		{"claimed without acknowledgement", map[string]string{"claimed.7.1": "ATTEMPT 7.1 run\nclaude --resume x\n"}, state.DeliveryUncertain, "no unclaimed request", []string{"claimed.7.1"}},
+		{"acknowledged as run", map[string]string{"ack": "ATTEMPT delivered:run\n"}, state.DeliveryResumed, "", []string{"ack"}},
+		{"acknowledged as declined", map[string]string{"ack": "ATTEMPT skipped:pending_input\n"}, state.DeliverySkipped, "already had input", []string{"ack"}},
+		{"acknowledgement of another attempt", map[string]string{"ack": "ffffffffffffffffffffffffffffffff delivered:run\n"}, state.DeliveryUncertain, "no unclaimed request", []string{"ack"}},
+		{"unclaimed request beside an old acknowledgement", map[string]string{"request": "ATTEMPT 7.1 run\nclaude --resume x\n", "ack": "ffffffffffffffffffffffffffffffff delivered:run\n"}, state.DeliverySkipped, "interrupted before", []string{"ack"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := deliveryClient(t, t.TempDir())
+			store := openState(t)
+			block := snapshot.Block{ID: deliveryBlock(1), CWD: "/", AgentResume: resumeReceipt(deliveryBlock(1))}
+			e, latest := deliveryEnvelope(t, 3, []snapshot.Block{block})
+			target := serverIdentity{HostID: "host", InstanceID: "instance"}
+			attempt := "0000000000000000000000000000000a"
+			log, err := store.LoadDeliveries("host", "instance")
+			if err != nil {
+				t.Fatal(err)
+			}
+			intent, _ := state.DeliveryFor(e, deliverySession, block)
+			intent.Outcome, intent.Attempt, intent.Shell = state.DeliveryIntent, attempt, "fish"
+			if err := store.RecordDelivery(e, &log, intent); err != nil {
+				t.Fatal(err)
+			}
+			box := filepath.Join(store.Dir(), "deliver", strings.TrimPrefix(string(block.ID), "block:"))
+			if err := os.MkdirAll(box, 0700); err != nil {
+				t.Fatal(err)
+			}
+			for name, content := range tc.files {
+				if err := os.WriteFile(filepath.Join(box, name), []byte(strings.ReplaceAll(content, "ATTEMPT", attempt)), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deliveries, changed, err := c.deliverNative(t.Context(), store, e, latest, target)
+			if err != nil || !changed || len(deliveries) != 1 {
+				t.Fatalf("settling: %+v changed=%v %v", deliveries, changed, err)
+			}
+			d := deliveries[0]
+			if d.Outcome != tc.outcome || !strings.Contains(d.Reason, tc.reason) || d.Attempt != attempt || d.Shell != "fish" {
+				t.Fatalf("settled %+v, want %s %q", d, tc.outcome, tc.reason)
+			}
+			entries, err := os.ReadDir(box)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			if !reflect.DeepEqual(names, tc.left) {
+				t.Fatalf("mailbox holds %v, want %v", names, tc.left)
+			}
+		})
+	}
+}
+
+// A pane whose shell is still sourcing its config has no announcement yet.
+// When hooks are in use at all, the delivery waits a bounded time for it
+// and then proceeds with the announced hook; when no hook exists anywhere,
+// the pane is skipped at once rather than making every user wait.
+func TestDeliverNativeWaitsForLateAnnouncement(t *testing.T) {
+	responses := t.TempDir()
+	c := deliveryClient(t, responses)
+	me := os.Getpid()
+	block := snapshot.Block{ID: deliveryBlock(1), CWD: "/", Foreground: "echo late"}
+	writeProcess(t, responses, block.ID, deliveryProcess{Foreground: &paneProcess{Name: "fish", PID: me}, Child: &paneProcess{Name: "fish", PID: me}})
+	e, latest := deliveryEnvelope(t, 5, []snapshot.Block{block})
+	target := serverIdentity{HostID: "host", InstanceID: "instance"}
+
+	store := openState(t)
+	started := time.Now()
+	deliveries, _, err := c.deliverNative(t.Context(), store, e, latest, target)
+	if err != nil || len(deliveries) != 1 || !strings.Contains(deliveries[0].Reason, "no delivery hook") {
+		t.Fatalf("without hooks anywhere: %+v %v", deliveries, err)
+	}
+	if waited := time.Since(started); waited > deliveryHookWait/2 {
+		t.Fatalf("a pane without hooks anywhere waited %s", waited)
+	}
+
+	// Another pane's mailbox shows hooks are in use; this pane announces
+	// itself 500 ms after the delivery started looking. The announced fish
+	// is this test process, which ignores the wake, so the attempt settles
+	// as unclaimed: the announcement was waited for and used.
+	late := openState(t)
+	other := filepath.Join(late.Dir(), "deliver", strings.TrimPrefix(string(deliveryBlock(2)), "block:"))
+	mine := filepath.Join(late.Dir(), "deliver", strings.TrimPrefix(string(block.ID), "block:"))
+	if err := os.MkdirAll(other, 0700); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if err := os.MkdirAll(mine, 0700); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(mine, "ready"), []byte(fmt.Sprintf("%d fish %d.1\n", me, me)), 0600); err != nil {
+			t.Error(err)
+		}
+	}()
+	deliveries, _, err = c.deliverNative(t.Context(), late, e, latest, target)
+	if err != nil || len(deliveries) != 1 || deliveries[0].Outcome != state.DeliverySkipped || !strings.Contains(deliveries[0].Reason, "did not claim") || deliveries[0].Attempt == "" {
+		t.Fatalf("with a late announcement: %+v %v", deliveries, err)
+	}
+}

@@ -61,8 +61,12 @@ func TestDeliveryLogTransitions(t *testing.T) {
 		t.Fatalf("missing log must load empty: %+v %v", empty, err)
 	}
 	l := NewDeliveryLog(e.HostID, e.InstanceID)
-	resume := Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryReceipt, Kind: DeliveryReceipt, Input: resumeInput}
-	typed := Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make test", Shell: "zsh"}
+	resume := Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryReceipt, Kind: DeliveryReceipt, Input: resumeInput, Attempt: attemptA}
+	typed := Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make test", Shell: "zsh", Attempt: attemptB}
+	noAttempt := resume
+	noAttempt.Attempt = ""
+	badAttempt := resume
+	badAttempt.Attempt = "not-hex"
 	rejected := []struct {
 		name string
 		d    Delivery
@@ -72,11 +76,14 @@ func TestDeliveryLogTransitions(t *testing.T) {
 		{"skipped without reason", with(resume, DeliverySkipped, "")},
 		{"uncertain without intent", with(resume, DeliveryUncertain, "no ack")},
 		{"intent with reason", with(resume, DeliveryIntent, "why")},
+		{"intent without attempt", with(noAttempt, DeliveryIntent, "")},
+		{"malformed attempt", with(badAttempt, DeliveryIntent, "")},
+		{"skip with an attempt but no intent", with(resume, DeliverySkipped, "busy")},
 		{"unknown outcome", with(resume, "delivered", "")},
-		{"changed input", with(Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryReceipt, Kind: DeliveryReceipt, Input: "rm -rf /"}, DeliveryIntent, "")},
-		{"wrong kind", with(Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryReceipt, Input: "make test"}, DeliveryIntent, "")},
-		{"wrong generation", with(Delivery{Generation: e.Generation + 1, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make test"}, DeliveryIntent, "")},
-		{"wrong session", with(Delivery{Generation: e.Generation, SessionID: "session:01a18c00-0000-7000-8000-0000000000ee", BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make test"}, DeliveryIntent, "")},
+		{"changed input", with(Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryReceipt, Kind: DeliveryReceipt, Input: "rm -rf /", Attempt: attemptA}, DeliveryIntent, "")},
+		{"wrong kind", with(Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryReceipt, Input: "make test", Attempt: attemptA}, DeliveryIntent, "")},
+		{"wrong generation", with(Delivery{Generation: e.Generation + 1, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make test", Attempt: attemptA}, DeliveryIntent, "")},
+		{"wrong session", with(Delivery{Generation: e.Generation, SessionID: "session:01a18c00-0000-7000-8000-0000000000ee", BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make test", Attempt: attemptA}, DeliveryIntent, "")},
 		{"block without input", with(Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryPlain, Kind: DeliveryForeground, Input: ""}, DeliverySkipped, "busy")},
 		{"unknown block", with(Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: "block:01a18c00-0000-7000-8000-0000000000ff", Kind: DeliveryForeground, Input: "x"}, DeliverySkipped, "busy")},
 		{"long reason", with(resume, DeliverySkipped, strings.Repeat("r", maxDeliveryReason+1))},
@@ -138,9 +145,12 @@ func TestDeliveryLogTransitions(t *testing.T) {
 	if err := s.RecordDelivery(otherHost, &l, with(typed, DeliverySkipped, "busy")); err == nil {
 		t.Fatal("a record from another host's generation was accepted")
 	}
+	if outcomes[0].Attempt != attemptA || outcomes[1].Attempt != attemptB {
+		t.Fatalf("resolved records must keep their attempt: %+v", outcomes)
+	}
 	// A skip needs no intent: nothing was sent to the shell.
 	fresh := NewDeliveryLog(e.HostID, "second-instance")
-	if err := s.RecordDelivery(e, &fresh, with(resume, DeliverySkipped, "busy: sleep is running")); err != nil {
+	if err := s.RecordDelivery(e, &fresh, with(noAttempt, DeliverySkipped, "busy: sleep is running")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordDelivery(e, &fresh, with(resume, DeliveryIntent, "")); err == nil {
@@ -157,7 +167,7 @@ func TestDeliveryLogSpansGenerations(t *testing.T) {
 	gen1 := deliveryFixture()
 	l := NewDeliveryLog(gen1.HostID, "live")
 	resume := Delivery{Generation: gen1.Generation, SessionID: deliverySession, BlockID: deliveryReceipt, Kind: DeliveryReceipt, Input: resumeInput}
-	typed := Delivery{Generation: gen1.Generation, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make test"}
+	typed := Delivery{Generation: gen1.Generation, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make test", Attempt: attemptA}
 	if err := s.RecordDelivery(gen1, &l, with(resume, DeliverySkipped, "no hook")); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +192,7 @@ func TestDeliveryLogSpansGenerations(t *testing.T) {
 	// The intent came from generation 1 with "make test"; generation 2 saved
 	// a different command for the same block, which must not become a new
 	// intent nor silently replace the old one.
-	newTyped := with(Delivery{Generation: 2, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make lint"}, DeliveryIntent, "")
+	newTyped := with(Delivery{Generation: 2, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make lint", Attempt: attemptB}, DeliveryIntent, "")
 	if err := s.RecordDelivery(gen2, &loaded, newTyped); err == nil {
 		t.Fatal("a new intent over an open one was accepted")
 	}
@@ -190,7 +200,7 @@ func TestDeliveryLogSpansGenerations(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed := loaded.Latest()[deliveryForeground]
-	if closed.Generation != 1 || closed.Input != "make test" || closed.Outcome != DeliveryUncertain {
+	if closed.Generation != 1 || closed.Input != "make test" || closed.Outcome != DeliveryUncertain || closed.Attempt != attemptA {
 		t.Fatalf("resolved intent must keep its own generation and input: %+v", closed)
 	}
 	if err := s.PruneDeliveries(gen1.HostID, "live"); err != nil {
