@@ -24,6 +24,7 @@ history contains no pre-implementation closure matrix. The results are from the 
 | Native persistence baseline | Empty `session.list` after restart with the same state directory | Closed |
 | Floating-layer detection | One created floating layer and its block ID explicitly reported as unsupported | Closed |
 | Floating-layer reconstruction | No layer geometry, stacking, or block restoration | Unresolved |
+| Focused floating pane | `TestSaveFocusedFloatingPanePrivateServer` saves a window whose focus Rex put on a floating pane, focused on its first tiled pane and reported in `focus_substitutions` | Closed |
 | Detached-block detection | Reconcile `session.list_blocks` with every selected session's view; report the exact detached block ID, session, flavor, and reason | Closed |
 | Detached-block reconstruction | No detached block restoration | Unresolved |
 | Comparison oracle | Real round trip; mutation tests reject omissions and changes, including every missing ID mapping | Closed |
@@ -248,6 +249,19 @@ cwd in `report.cwd_substitutions`. Manual save prints each substitution;
 automatic summaries expose `capture_cwd_substitutions`. A failed process API
 read or an expired deadline still fails explicitly. Restore verification requires
 an observed cwd and never accepts this capture substitution as proof of recovery.
+
+Rex reports a window's focus and zoom on floating panes as well, and leaves
+the focus out of a window that has none. A snapshot holds only the tiled
+layer, so capture saves such a window focused on its first tiled pane,
+unzoomed, and records the window, the focus and zoom Rex reported, and the
+replacement in `report.focus_substitutions`; a zoom on a floating pane under
+a tiled focus is dropped the same way. Manual save prints each substitution;
+automatic summaries expose `capture_focus_substitutions`. Before this, one
+focused floating pane failed every automatic save with "invalid focus or
+zoom" until focus returned to a tiled pane.
+`TestCaptureSubstitutesFocusOutsideTiledLayer` covers each shape against a
+scripted Rex, and `TestSaveFocusedFloatingPanePrivateServer` saves a live
+window that Rex focused on a floating pane.
 Only cwd-bearing fields are decoded from these responses;
 command lines, environment, ownership metadata, and terminal contents are not
 included in the snapshot.
@@ -1342,8 +1356,8 @@ Detached blocks retain their source session and block IDs, flavor, and reason in
 individual unsupported entries; they are absent from the snapshot and restore
 ID map. A mismatch between the registered block inventory and the session view
 fails capture.
-A non-shell tiled block, no usable absolute cwd, or focus/zoom pointing outside the
-supported tiled tree fails capture. Save checks structural stability around
+A non-shell tiled block or no usable absolute cwd fails capture; focus or zoom
+outside the supported tiled tree is substituted and reported. Save checks structural stability around
 Capture; the underlying S0 Capture remains non-atomic. Remote hosts, alternate
 block flavors, shell selection,
 environment, pane ownership, client/app selection, layer bounds/stacking, and

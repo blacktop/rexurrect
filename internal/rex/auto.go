@@ -18,25 +18,26 @@ const (
 )
 
 type AutoResult struct {
-	RexBinarySubstitution    *rexbin.Substitution       `json:"rex_binary_substitution,omitempty"`
-	State                    string                     `json:"state"`
-	Generation               uint64                     `json:"generation"`
-	HostID                   string                     `json:"host_id"`
-	InstanceID               string                     `json:"instance_id"`
-	RexAPI                   RexAPI                     `json:"rex_api,omitzero"`
-	RestoreOutcome           string                     `json:"restore_outcome"`
-	Restored                 snapshot.Recovery          `json:"restored,omitzero"`
-	Native                   int                        `json:"native,omitempty"`
-	Deliveries               []state.Delivery           `json:"deliveries,omitempty"`
-	SavedGeneration          uint64                     `json:"saved_generation,omitempty"`
-	Reason                   string                     `json:"reason,omitempty"`
-	CWDSubstitutions         []state.CWDSubstitution    `json:"cwd_substitutions,omitempty"`
-	NotResumed               []state.AgentNotResumed    `json:"not_resumed,omitempty"`
-	ScrollbackSkipped        []snapshot.Skip            `json:"scrollback_skipped,omitempty"`
-	PrunedReceipts           []snapshot.SourceID        `json:"pruned_receipts,omitempty"`
-	CaptureCWDSubstitutions  []snapshot.CWDSubstitution `json:"capture_cwd_substitutions,omitempty"`
-	CaptureScrollbackSkipped []snapshot.Skip            `json:"capture_scrollback_skipped,omitempty"`
-	CaptureForegroundSkipped []snapshot.Skip            `json:"capture_foreground_skipped,omitempty"`
+	RexBinarySubstitution     *rexbin.Substitution         `json:"rex_binary_substitution,omitempty"`
+	State                     string                       `json:"state"`
+	Generation                uint64                       `json:"generation"`
+	HostID                    string                       `json:"host_id"`
+	InstanceID                string                       `json:"instance_id"`
+	RexAPI                    RexAPI                       `json:"rex_api,omitzero"`
+	RestoreOutcome            string                       `json:"restore_outcome"`
+	Restored                  snapshot.Recovery            `json:"restored,omitzero"`
+	Native                    int                          `json:"native,omitempty"`
+	Deliveries                []state.Delivery             `json:"deliveries,omitempty"`
+	SavedGeneration           uint64                       `json:"saved_generation,omitempty"`
+	Reason                    string                       `json:"reason,omitempty"`
+	CWDSubstitutions          []state.CWDSubstitution      `json:"cwd_substitutions,omitempty"`
+	NotResumed                []state.AgentNotResumed      `json:"not_resumed,omitempty"`
+	ScrollbackSkipped         []snapshot.Skip              `json:"scrollback_skipped,omitempty"`
+	PrunedReceipts            []snapshot.SourceID          `json:"pruned_receipts,omitempty"`
+	CaptureCWDSubstitutions   []snapshot.CWDSubstitution   `json:"capture_cwd_substitutions,omitempty"`
+	CaptureFocusSubstitutions []snapshot.FocusSubstitution `json:"capture_focus_substitutions,omitempty"`
+	CaptureScrollbackSkipped  []snapshot.Skip              `json:"capture_scrollback_skipped,omitempty"`
+	CaptureForegroundSkipped  []snapshot.Skip              `json:"capture_foreground_skipped,omitempty"`
 }
 
 // AutoCycle holds the same nonblocking lock as manual save and restore for its
@@ -147,6 +148,7 @@ func (c Client) AutoCycle(ctx context.Context, dir string, wait, timeout time.Du
 	out.SavedGeneration = saved.Generation
 	out.PrunedReceipts = saved.Report.PrunedReceipts
 	out.CaptureCWDSubstitutions = saved.Report.CWDSubstitutions
+	out.CaptureFocusSubstitutions = saved.Report.FocusSubstitutions
 	out.CaptureScrollbackSkipped = saved.Report.ScrollbackSkipped
 	out.CaptureForegroundSkipped = saved.Report.ForegroundSkipped
 	if saved.Generation == 0 {

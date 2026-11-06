@@ -131,11 +131,12 @@ type Unsupported struct {
 }
 
 type Report struct {
-	Unsupported       []Unsupported     `json:"unsupported,omitempty"`
-	PrunedReceipts    []SourceID        `json:"pruned_receipts,omitempty"`
-	CWDSubstitutions  []CWDSubstitution `json:"cwd_substitutions,omitempty"`
-	ScrollbackSkipped []Skip            `json:"scrollback_skipped,omitempty"`
-	ForegroundSkipped []Skip            `json:"foreground_skipped,omitempty"`
+	Unsupported        []Unsupported       `json:"unsupported,omitempty"`
+	PrunedReceipts     []SourceID          `json:"pruned_receipts,omitempty"`
+	CWDSubstitutions   []CWDSubstitution   `json:"cwd_substitutions,omitempty"`
+	FocusSubstitutions []FocusSubstitution `json:"focus_substitutions,omitempty"`
+	ScrollbackSkipped  []Skip              `json:"scrollback_skipped,omitempty"`
+	ForegroundSkipped  []Skip              `json:"foreground_skipped,omitempty"`
 }
 
 // Skip records a shell block that an optional feature (scrollback, foreground
@@ -153,10 +154,31 @@ type CWDSubstitution struct {
 	CWD     string   `json:"cwd"`
 }
 
+// FocusSubstitution records a window whose focus or zoom Rex reported on a
+// block outside the tiled layer, such as a floating pane, or not at all. The
+// snapshot holds that window focused on Replacement, unzoomed.
+type FocusSubstitution struct {
+	SessionID   SourceID `json:"session_source_id"`
+	WindowID    SourceID `json:"window_source_id"`
+	Focus       SourceID `json:"focused_block,omitempty"`
+	Zoom        SourceID `json:"zoomed_block,omitempty"`
+	Replacement SourceID `json:"replacement"`
+}
+
 // Blocks returns every tiled block in window and layout order. The pointers
 // alias the session, so callers may annotate blocks in place. Call it only
 // after Inventory has validated and bounded the layout trees.
 func (s Session) Blocks() []*Block {
+	var blocks []*Block
+	for _, window := range s.Windows {
+		blocks = append(blocks, window.Blocks()...)
+	}
+	return blocks
+}
+
+// Blocks returns the window's tiled blocks in layout order, under the same
+// terms as Session.Blocks.
+func (w Window) Blocks() []*Block {
 	var blocks []*Block
 	var visit func(Node)
 	visit = func(n Node) {
@@ -164,12 +186,12 @@ func (s Session) Blocks() []*Block {
 			blocks = append(blocks, n.Block)
 			return
 		}
-		visit(n.Split.Before)
-		visit(n.Split.After)
+		if n.Split != nil {
+			visit(n.Split.Before)
+			visit(n.Split.After)
+		}
 	}
-	for _, window := range s.Windows {
-		visit(window.Layout)
-	}
+	visit(w.Layout)
 	return blocks
 }
 

@@ -159,6 +159,7 @@ func (c Client) Capture(ctx context.Context, ids []snapshot.LiveID) (snapshot.Sn
 					return out, report, errors.New("unplaced block in tiled inventory")
 				}
 			}
+			placeFocus(s.ID, &window, &report)
 			s.Windows = append(s.Windows, window)
 		}
 		for _, b := range listed.Blocks {
@@ -174,6 +175,33 @@ func (c Client) Capture(ctx context.Context, ids []snapshot.LiveID) (snapshot.Sn
 	}
 	_, err := out.Inventory()
 	return out, report, err
+}
+
+// placeFocus keeps the focus and zoom Rex reported when both name tiled
+// panes. Rex also focuses and zooms floating panes, and leaves the focus out
+// of a window that has none; a snapshot holds only the tiled layer, so such
+// a window is saved focused on its first tiled pane, unzoomed, and the
+// report records what Rex reported.
+func placeFocus(session snapshot.SourceID, window *snapshot.Window, report *snapshot.Report) {
+	blocks := window.Blocks()
+	if len(blocks) == 0 {
+		return
+	}
+	tiled := make(map[snapshot.SourceID]bool, len(blocks))
+	for _, b := range blocks {
+		tiled[b.ID] = true
+	}
+	focus, zoom := window.Focus, window.Zoom
+	if !tiled[focus] {
+		focus, zoom = blocks[0].ID, ""
+	} else if zoom != "" && !tiled[zoom] {
+		zoom = ""
+	}
+	if focus == window.Focus && zoom == window.Zoom {
+		return
+	}
+	report.FocusSubstitutions = append(report.FocusSubstitutions, snapshot.FocusSubstitution{SessionID: session, WindowID: window.ID, Focus: window.Focus, Zoom: window.Zoom, Replacement: focus})
+	window.Focus, window.Zoom = focus, zoom
 }
 
 func (c Client) captureNode(ctx context.Context, session snapshot.LiveID, n viewNode, blocks map[snapshot.LiveID]blockView, depth int, budget *int, report *snapshot.Report) (snapshot.Node, error) {

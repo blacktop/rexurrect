@@ -92,6 +92,25 @@ func deliverySummary(deliveries []state.Delivery) string {
 	return strings.Join(parts, ", ")
 }
 
+// printFocusSubstitutions says which windows were saved focused elsewhere
+// than Rex reported, because Rex's focus or zoom was not on a tiled pane.
+func printFocusSubstitutions(w io.Writer, subs []snapshot.FocusSubstitution) error {
+	var err error
+	for _, sub := range subs {
+		var printErr error
+		switch {
+		case sub.Focus == "":
+			_, printErr = fmt.Fprintf(w, "Window %s: no focused pane; saved focused on %s during capture\n", sub.WindowID, sub.Replacement)
+		case sub.Focus != sub.Replacement:
+			_, printErr = fmt.Fprintf(w, "Window %s: focus on %s is not a tiled pane; saved focused on %s during capture\n", sub.WindowID, sub.Focus, sub.Replacement)
+		default:
+			_, printErr = fmt.Fprintf(w, "Window %s: zoom on %s is not a tiled pane; saved unzoomed during capture\n", sub.WindowID, sub.Zoom)
+		}
+		err = errors.Join(err, printErr)
+	}
+	return err
+}
+
 // printSkips lists the blocks an optional feature skipped, so a manual save
 // or restore never looks fully successful when it was not.
 func printSkips(w io.Writer, what string, skips []snapshot.Skip) error {
@@ -241,6 +260,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_, err := fmt.Fprintf(stderr, "Block %s: no cwd; substituted %q during capture\n", sub.BlockID, sub.CWD)
 			textErr = errors.Join(textErr, err)
 		}
+		textErr = errors.Join(textErr, printFocusSubstitutions(stderr, result.CaptureFocusSubstitutions))
 		if err := errors.Join(cycleErr, textErr, json.NewEncoder(stdout).Encode(result)); err != nil {
 			return &reportedAutoError{err}
 		}
@@ -260,6 +280,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			_, printErr := fmt.Fprintf(stdout, "Block %s: no cwd; substituted %q during capture\n", sub.BlockID, sub.CWD)
 			err = errors.Join(err, printErr)
 		}
+		err = errors.Join(err, printFocusSubstitutions(stdout, saved.Report.FocusSubstitutions))
 		for _, id := range saved.Report.PrunedReceipts {
 			_, printErr := fmt.Fprintf(stdout, "Pruned receipt %s\n", id)
 			err = errors.Join(err, printErr)

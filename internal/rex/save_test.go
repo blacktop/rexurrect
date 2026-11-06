@@ -279,3 +279,40 @@ esac
 		t.Fatal("unstable capture changed current")
 	}
 }
+
+// Rex focuses a floating pane as the user opens it. The live LaunchAgent once
+// lost 26 consecutive saves to such a window; the save must go through with
+// the window focused on its first tiled pane and the substitution reported.
+func TestSaveFocusedFloatingPanePrivateServer(t *testing.T) {
+	s := newIsolatedServer(t)
+	leaf := func(label string) createNode {
+		return createNode{Block: &createBlock{Flavor: shellFlavor, Label: label, Options: shellOptions{Shell: "/bin/sh", Login: new(bool), CWD: s.root}}}
+	}
+	var created createdSession
+	mustCall(t, s.client, "session.create", map[string]any{"label": "floating-focus", "initial_windows": []createWindow{{Label: "work", Layout: createNode{Split: &createSplit{Direction: "horizontal", Ratio: 0.5, Before: leaf("left"), After: leaf("right")}}}}}, &created)
+	if len(created.Windows) != 1 || len(created.Windows[0].Blocks) != 2 {
+		t.Fatalf("fixture inventory: %+v", created)
+	}
+	mustCall(t, s.client, "session.focus_block", map[string]any{"session_id": created.ID, "block_id": created.Windows[0].Blocks[1]}, nil)
+	var floating struct {
+		ID     snapshot.LiveID   `json:"layer_id"`
+		Blocks []snapshot.LiveID `json:"block_ids"`
+	}
+	mustCall(t, s.client, "session.new_layer", map[string]any{"session_id": created.ID, "window_id": created.Windows[0].ID, "bounds": []float64{0.1, 0.1, 0.6, 0.5}, "layout": leaf("float"), "focus": true}, &floating)
+	view, err := s.client.view(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(floating.Blocks) != 1 || len(view.Windows) != 1 || view.Windows[0].Focus != floating.Blocks[0] {
+		t.Fatalf("Rex did not focus the floating pane: %+v %+v", floating, view)
+	}
+	saved, err := s.client.Save(t.Context(), filepath.Join(t.TempDir(), "resurrect"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := saved.Snapshot.Sessions[0].Windows[0]
+	want := []snapshot.FocusSubstitution{{SessionID: snapshot.SourceID(created.ID), WindowID: snapshot.SourceID(created.Windows[0].ID), Focus: snapshot.SourceID(floating.Blocks[0]), Zoom: snapshot.SourceID(view.Windows[0].Zoom), Replacement: snapshot.SourceID(created.Windows[0].Blocks[0])}}
+	if saved.Generation != 1 || window.Focus != want[0].Replacement || window.Zoom != "" || !reflect.DeepEqual(saved.Report.FocusSubstitutions, want) {
+		t.Fatalf("saved focus %q zoom %q substitutions %+v", window.Focus, window.Zoom, saved.Report.FocusSubstitutions)
+	}
+}
