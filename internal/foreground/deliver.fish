@@ -61,7 +61,10 @@ if status is-interactive; and set -q REX_BLOCK; and string match -q 'block:*' --
         return 0
     end
     function _rr_deliver_exit --on-event fish_exit
-        command rm -f -- "$_rr_deliver_dir/ready" "$_rr_deliver_dir/request" "$_rr_deliver_dir/ack" "$_rr_deliver_dir"/claimed.* 2>/dev/null
+        # fish refuses to run a command whose glob matches nothing, and no
+        # claimed request is the usual case; set accepts an empty match.
+        set -l files "$_rr_deliver_dir/ready" "$_rr_deliver_dir/request" "$_rr_deliver_dir/ack" "$_rr_deliver_dir"/claimed.*
+        command rm -f -- $files 2>/dev/null
         command rmdir -- "$_rr_deliver_dir" 2>/dev/null
         return 0
     end

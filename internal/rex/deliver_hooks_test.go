@@ -137,6 +137,38 @@ func TestDeliveryHooksPrivateServer(t *testing.T) {
 	}
 }
 
+// A pane's shell removes its mailbox when it exits, with or without a claimed
+// request left in it, and prints nothing while doing so.
+func TestDeliveryHooksCleanUpOnExit(t *testing.T) {
+	for _, tc := range []struct{ shell, noConfig, listing string }{
+		{"fish", "--no-config", "ready"},
+		{"zsh", "-f", "fifo\nready"},
+	} {
+		for name, leftover := range map[string]string{"empty": "", "claimed": `; command touch "$_rr_deliver_dir/claimed.left"`} {
+			t.Run(tc.shell+"/"+name, func(t *testing.T) {
+				shell, err := exec.LookPath(tc.shell)
+				if err != nil {
+					t.Skipf("%s not installed", tc.shell)
+				}
+				dir := t.TempDir()
+				mailbox := filepath.Join(dir, "deliver", strings.TrimPrefix(agentReceipt(1, "").BlockID, "block:"))
+				// The trailing builtin keeps zsh from replacing itself with the
+				// last command, which would skip its exit hook.
+				script := "source " + hookScript(t, tc.shell) + `; command ls -A "$_rr_deliver_dir"` + leftover + "; true"
+				cmd := exec.CommandContext(t.Context(), shell, tc.noConfig, "-i", "-c", script)
+				cmd.Env = paneEnv(t.TempDir(), t.TempDir(), "unix:///unused", dir)
+				out, err := cmd.CombinedOutput()
+				if err != nil || strings.TrimSpace(string(out)) != tc.listing {
+					t.Fatalf("hook session: %v\n%s", err, out)
+				}
+				if _, err := os.Lstat(mailbox); !os.IsNotExist(err) {
+					t.Fatalf("mailbox survived the shell exiting: %v", err)
+				}
+			})
+		}
+	}
+}
+
 // installHook points the private home's shell config at rexurrect's hook
 // for shell, with the state directory the test saves into.
 func installHook(t *testing.T, s *isolatedServer, shell, dir string) {
