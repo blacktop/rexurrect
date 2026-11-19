@@ -116,14 +116,38 @@ func TestDeliveryHooksPrivateServer(t *testing.T) {
 			if !strings.Contains(pendingScreen, "echo pending") || strings.Contains(pendingScreen, "must-not-appear") {
 				t.Errorf("pending pane changed:\n%s", pendingScreen)
 			}
-			// Nothing is asked twice, and the mailboxes hold no request.
+			// fish ran the resume command, which fails here because the
+			// private PATH has no claude: its hook reports the exit, and the
+			// next pass marks the block failed with that status. zsh only
+			// typed the command, so its next pass records nothing. Nothing is
+			// asked twice, and the mailboxes hold no request.
 			store, err = state.Open(dir)
 			if err != nil {
 				t.Fatal(err)
 			}
+			if shell == "fish" {
+				awaitExit(t, store, snapshot.SourceID(blocks[0]), byBlock[snapshot.SourceID(blocks[0])].Attempt)
+			}
 			again, changed, err := s.client.deliverNative(t.Context(), store, e, latest, target)
-			if err != nil || changed || len(again) != 3 {
+			if err != nil || changed != (shell == "fish") || len(again) != 3 {
 				t.Fatalf("second pass: %+v changed=%v %v", again, changed, err)
+			}
+			for _, d := range again {
+				if d.BlockID != snapshot.SourceID(blocks[0]) {
+					if d != byBlock[d.BlockID] {
+						t.Errorf("second pass changed %+v to %+v", byBlock[d.BlockID], d)
+					}
+					continue
+				}
+				if shell == "fish" && (d.Outcome != state.DeliveryFailed || !strings.Contains(d.Reason, "exited with status 127 after ")) {
+					t.Errorf("failed resume recorded as %+v", d)
+				}
+				if shell == "zsh" && d.Outcome != state.DeliveryTypedOnly {
+					t.Errorf("typed resume changed to %+v", d)
+				}
+			}
+			if _, changed, err := s.client.deliverNative(t.Context(), store, e, latest, target); err != nil || changed {
+				t.Fatalf("third pass: changed=%v %v", changed, err)
 			}
 			for _, block := range blocks {
 				if revoked, err := store.RevokeDeliveryRequest(snapshot.SourceID(block)); err != nil || revoked {
@@ -214,6 +238,26 @@ func awaitHooks(t *testing.T, store *state.Store, blocks []snapshot.LiveID) []st
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("only %d of %d hooks announced themselves", len(hooks), len(blocks))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// awaitExit waits until the hook in block's pane reports how the command it
+// ran for attempt finished.
+func awaitExit(t *testing.T, store *state.Store, block snapshot.SourceID, attempt string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		exit, ok, err := store.DeliveryExit(block)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && exit.Attempt == attempt {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("block %s never reported an exit for attempt %s (last %+v ok=%v)", block, attempt, exit, ok)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

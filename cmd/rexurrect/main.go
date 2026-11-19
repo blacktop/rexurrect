@@ -52,7 +52,8 @@ func deliveryKind(kind string) string {
 }
 
 // printDeliveries says what became of each saved command in a pane Rex
-// restored itself: run, typed and awaiting Enter, not delivered, or unknown.
+// restored itself: run, run and failed, typed and awaiting Enter, not
+// delivered, or unknown.
 func printDeliveries(w io.Writer, deliveries []state.Delivery) error {
 	var err error
 	for _, d := range deliveries {
@@ -61,6 +62,8 @@ func printDeliveries(w io.Writer, deliveries []state.Delivery) error {
 		switch d.Outcome {
 		case state.DeliveryResumed:
 			line = fmt.Sprintf("Block %s: %s resumed", d.BlockID, kind)
+		case state.DeliveryFailed:
+			line = fmt.Sprintf("Block %s: %s failed (%s): %s", d.BlockID, kind, d.Reason, d.Input)
 		case state.DeliveryTypedOnly:
 			line = fmt.Sprintf("Block %s: %s typed, awaiting Enter", d.BlockID, kind)
 		case state.DeliverySkipped:
@@ -84,7 +87,7 @@ func deliverySummary(deliveries []state.Delivery) string {
 		counts[d.Outcome]++
 	}
 	var parts []string
-	for _, item := range []struct{ outcome, label string }{{state.DeliveryResumed, "resumed"}, {state.DeliveryTypedOnly, "awaiting Enter"}, {state.DeliverySkipped, "not delivered"}, {state.DeliveryUncertain, "uncertain"}, {state.DeliveryIntent, "in progress"}} {
+	for _, item := range []struct{ outcome, label string }{{state.DeliveryResumed, "resumed"}, {state.DeliveryFailed, "failed after resuming"}, {state.DeliveryTypedOnly, "awaiting Enter"}, {state.DeliverySkipped, "not delivered"}, {state.DeliveryUncertain, "uncertain"}, {state.DeliveryIntent, "in progress"}} {
 		if n := counts[item.outcome]; n != 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", n, item.label))
 		}
@@ -261,6 +264,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			textErr = errors.Join(textErr, err)
 		}
 		textErr = errors.Join(textErr, printFocusSubstitutions(stderr, result.CaptureFocusSubstitutions))
+		for _, d := range result.Deliveries {
+			if d.Outcome == state.DeliveryFailed {
+				textErr = errors.Join(textErr, printDeliveries(stderr, []state.Delivery{d}))
+			}
+		}
 		if err := errors.Join(cycleErr, textErr, json.NewEncoder(stdout).Encode(result)); err != nil {
 			return &reportedAutoError{err}
 		}

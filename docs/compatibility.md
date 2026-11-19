@@ -543,6 +543,7 @@ terminal outcome per server instance:
 |---|---|
 | `intent` | written before any input is requested from the shell |
 | `resumed` | the shell ran the resume command (receipts, fish only) |
+| `failed` | follows `resumed`: the command exited nonzero within two minutes |
 | `typed_only` | the shell put the command at its prompt; Enter is the user's |
 | `skipped` | nothing reached the shell; `reason` says why |
 | `uncertain` | input was requested but never acknowledged; never resent |
@@ -550,7 +551,9 @@ terminal outcome per server instance:
 Each record also carries the block's kind (`receipt` or `foreground`), the
 exact input line, and the shell observed at the prompt. `resumed` and
 `typed_only` are only valid after an `intent` with the same generation and
-input; a `skipped` needs none, since nothing was sent. A record is checked
+input; a `skipped` needs none, since nothing was sent. `failed` is the one
+record allowed after a terminal outcome: it follows `resumed` once, for the
+same attempt, and sends nothing. A record is checked
 against the saved input of its block when it is written, and the log's
 transitions are checked whenever it is read, so a record from a generation
 the store no longer retains stays valid. Once a block has a terminal record,
@@ -621,7 +624,16 @@ never claimed it, and that is a clean `skipped` ("did not claim the
 request within 2s", "interrupted before the hook claimed the request");
 otherwise an acknowledgement of that attempt decides, and without one the
 attempt is `uncertain` ("no unclaimed request and no acknowledgement of
-this attempt"). A hook that cannot be woken is settled the same way. The
+this attempt"). A hook that cannot be woken is settled the same way. When
+the fish hook runs a command, its `fish_postexec` handler publishes `exit`
+("<attempt> <status> <milliseconds>", from `$status` and `$CMD_DURATION`)
+once that command finishes. Every later pass over the instance's native
+sessions, which the same-instance automatic cycle makes each minute, reads
+the `exit` of each `resumed` block and records `failed` ("exited with status
+127 after 25.8s") when it names the same attempt, a nonzero status and a run
+of under two minutes. A clean exit, a later one, another attempt's report, a
+malformed report or none at all leaves the block `resumed`. The
+fish hook removes `exit` with the rest of its mailbox when the shell exits. The
 save prunes mailboxes of blocks that are no longer live once they are a
 minute old, for shells that were killed with the server.
 
@@ -629,22 +641,31 @@ minute old, for shells that were killed with the server.
 with the hook loaded from the pane's shell config: the receipt is resumed
 (fish) or typed (zsh), the foreground command is typed and not run, a pane
 with pending input is left untouched, the screens agree with the records,
-and a second pass asks nothing. `TestDeliveryHookBoundariesPrivateServer`
+and a second pass asks nothing; in fish the resume command itself fails
+(the private PATH has no `claude`), so the hook reports status 127 and the
+second pass records `failed`, after which a third pass records nothing.
+`TestDeliveryHookBoundariesPrivateServer`
 replaces a pane's shell with `exec <shell> --no-config`, which keeps the
 pid and the stale announcement but drops the handler, and checks the pane
 is left alive and undelivered; seeds an acknowledgement of another attempt
 and checks it is ignored; and announces a hook id the pane's hook does not
 have and checks the hook rejects the request.
 `TestDeliverNativeSettlesInterruptedAttempts` covers every mailbox state an
-open intent can be found in. `TestNativeRestorePrivateServer` installs the
+open intent can be found in, and `TestDeliverNativeReportsEarlyExit` every
+exit report a `resumed` block can be found with. `TestNativeRestorePrivateServer` installs the
 fish hook in the private home, so when the account's default shell is
-fish the restart itself resumes the receipt and types the recorded command.
+fish the restart itself resumes the receipt and types the recorded command;
+that resume fails (the private PATH has no `claude`), so the test waits for
+the hook's `exit` and checks that the next same-instance cycle marks it
+`failed` with status 127 and changes nothing else.
 
 `restore`, `status` and `auto` report the records as `deliveries` (JSON).
-The text forms are "Block B: resume command resumed", "… typed, awaiting
+The text forms are "Block B: resume command resumed", "… failed (reason):
+command", "… typed, awaiting
 Enter", "… not delivered (reason)", "… delivery uncertain (reason)", and the
-automatic cycle's one-line summary counts them ("1 awaiting Enter, 1 not
-delivered"). `TestNativeRestorePrivateServer` saves a receipt and a
+automatic cycle's one-line summary counts them ("1 failed after resuming, 1
+awaiting Enter, 1 not delivered"); the automatic cycle also prints the
+per-block line of each failed resume to its log. `TestNativeRestorePrivateServer` saves a receipt and a
 foreground record before the restart, checks that both blocks are logged as
 skipped with a reason on the new instance, and that an explicit restore of
 a later generation on that instance adds nothing; `TestNativeDeliveryRecovery`

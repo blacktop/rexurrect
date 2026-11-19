@@ -10,6 +10,8 @@
 # command there, running it for an agent resume (mode run) and leaving it
 # typed for a recorded command (mode type). Every claimed request is
 # acknowledged with its attempt id, so nothing is ever delivered twice.
+# When a command it ran finishes, the hook publishes its status and run
+# time as `exit`, so a resume that failed straight away can be reported.
 # Only an interactive shell that is the outermost shell of a pane installs;
 # a shell that replaced it with exec, which keeps the pid, installs again
 # and announces itself afresh.
@@ -53,6 +55,7 @@ if status is-interactive; and set -q REX_BLOCK; and string match -q 'block:*' --
         end
         commandline -r -- "$cmd"
         if test "$header[3]" = run
+            set -g _rr_deliver_running $header[1]
             commandline -f execute
         else
             commandline -f repaint
@@ -60,10 +63,19 @@ if status is-interactive; and set -q REX_BLOCK; and string match -q 'block:*' --
         _rr_deliver_write ack "$header[1] delivered:$header[3]"
         return 0
     end
+    # The command the hook put on the line is the next one fish runs, so the
+    # first fish_postexec after a run delivery reports exactly that command.
+    function _rr_deliver_finished --on-event fish_postexec
+        set -l code $status
+        set -q _rr_deliver_running; or return 0
+        _rr_deliver_write exit "$_rr_deliver_running $code $CMD_DURATION"
+        set -e _rr_deliver_running
+        return 0
+    end
     function _rr_deliver_exit --on-event fish_exit
         # fish refuses to run a command whose glob matches nothing, and no
         # claimed request is the usual case; set accepts an empty match.
-        set -l files "$_rr_deliver_dir/ready" "$_rr_deliver_dir/request" "$_rr_deliver_dir/ack" "$_rr_deliver_dir"/claimed.*
+        set -l files "$_rr_deliver_dir/ready" "$_rr_deliver_dir/request" "$_rr_deliver_dir/ack" "$_rr_deliver_dir/exit" "$_rr_deliver_dir"/claimed.*
         command rm -f -- $files 2>/dev/null
         command rmdir -- "$_rr_deliver_dir" 2>/dev/null
         return 0

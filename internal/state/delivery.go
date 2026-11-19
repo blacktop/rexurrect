@@ -15,12 +15,17 @@ import (
 
 // Delivery outcomes. A block gets at most one terminal outcome per server
 // instance: once its command has been typed or run, nothing is typed again.
+// The one record allowed after a terminal outcome is failed after resumed,
+// which reports what the command did and never sends anything.
 const (
 	// DeliveryIntent is written before any input reaches the shell, so a
 	// lost acknowledgement becomes uncertain instead of a second attempt.
 	DeliveryIntent = "intent"
 	// DeliveryResumed means the shell ran a receipt's resume command.
 	DeliveryResumed = "resumed"
+	// DeliveryFailed follows resumed when the resume command exited with a
+	// nonzero status soon after it started; Reason says how.
+	DeliveryFailed = "failed"
 	// DeliveryTypedOnly means the shell put the command at its prompt and
 	// left Enter to the user.
 	DeliveryTypedOnly = "typed_only"
@@ -143,10 +148,11 @@ func (l DeliveryLog) validate(host, instance string) error {
 			return errors.New("invalid delivery record")
 		}
 		previous := latest[d.BlockID]
-		if previous.Terminal() {
+		followsResume := previous.Outcome == DeliveryResumed && d.Outcome == DeliveryFailed
+		if previous.Terminal() && !followsResume {
 			return errors.New("delivery recorded after a terminal outcome")
 		}
-		if previous.Outcome == DeliveryIntent && (previous.Generation != d.Generation || previous.Input != d.Input || previous.Kind != d.Kind || previous.Attempt != d.Attempt) {
+		if (previous.Outcome == DeliveryIntent || followsResume) && (previous.Generation != d.Generation || previous.Input != d.Input || previous.Kind != d.Kind || previous.Attempt != d.Attempt) {
 			return errors.New("delivery outcome does not match its intent")
 		}
 		if d.Attempt != "" && !ValidDeliveryAttempt(d.Attempt) || previous.Outcome == "" && d.Outcome != DeliveryIntent && d.Attempt != "" {
@@ -158,6 +164,8 @@ func (l DeliveryLog) validate(host, instance string) error {
 			ok = previous.Outcome == "" && d.Reason == "" && d.Attempt != ""
 		case DeliveryResumed:
 			ok = previous.Outcome == DeliveryIntent && d.Reason == "" && d.Kind == DeliveryReceipt
+		case DeliveryFailed:
+			ok = followsResume && d.Reason != ""
 		case DeliveryTypedOnly:
 			ok = previous.Outcome == DeliveryIntent && d.Reason == ""
 		case DeliverySkipped:
@@ -226,14 +234,15 @@ func (s *Store) RecordDelivery(e Envelope, l *DeliveryLog, d Delivery) error {
 	return nil
 }
 
-// ResolveDelivery closes the intent of block with outcome and reason. The
-// intent already carried the saved input, so no generation is consulted:
-// an interrupted run is closed as uncertain even after the generation it
-// restored has been replaced.
+// ResolveDelivery appends outcome and reason to block's latest record: it
+// closes an intent, or marks a resumed block failed, and the log's rules
+// refuse any other transition. The latest record already carried the saved
+// input, so no generation is consulted: an interrupted run is closed as
+// uncertain even after the generation it restored has been replaced.
 func (s *Store) ResolveDelivery(l *DeliveryLog, block snapshot.SourceID, outcome, reason string) error {
 	d := l.Latest()[block]
-	if d.Outcome != DeliveryIntent {
-		return fmt.Errorf("block %s has no delivery intent to resolve", block)
+	if d.Outcome == "" {
+		return fmt.Errorf("block %s has no delivery record to resolve", block)
 	}
 	d.Outcome, d.Reason = outcome, reason
 	next := *l

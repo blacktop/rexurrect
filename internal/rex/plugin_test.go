@@ -584,6 +584,29 @@ func TestPluginShellHelpers(t *testing.T) {
 			}
 		}
 	})
+	// An agent that cannot be executed never ran a session, so the pane's
+	// receipt is kept: the launcher says so, exits 127 and clears nothing,
+	// whether the binary is missing or not executable.
+	t.Run("agent-not-executable", func(t *testing.T) {
+		t.Parallel()
+		blocked := filepath.Join(t.TempDir(), "claude")
+		if err := os.WriteFile(blocked, []byte("#!/bin/sh\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, agent := range []string{filepath.Join(t.TempDir(), "missing"), blocked, "no-such-agent"} {
+			clearPath := filepath.Join(t.TempDir(), "clear")
+			cmd := exec.CommandContext(t.Context(), "/bin/sh", launcher, "claude", "claude", "--resume", "x")
+			cmd.Env = append(paneEnv(filepath.Dir(bin), bin, "unix:///private/tmp/rex-plugin-test-unused", filepath.Join(bin, "saved")),
+				"REXURRECT_CLAUDE="+agent, "RR_CLEAR_PATH="+clearPath, "RR_CLEAR_STATUS=0")
+			out, err := cmd.CombinedOutput()
+			if err == nil || cmd.ProcessState.ExitCode() != 127 || !strings.Contains(string(out), "command not found; the receipt of this pane is kept") {
+				t.Fatalf("launcher with agent %s: %v, want exit 127: %s", agent, err, out)
+			}
+			if data, err := os.ReadFile(clearPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("launcher cleared the receipt of an agent that never ran: %q: %v", data, err)
+			}
+		}
+	})
 	// The shell entry points are one-liners; each installed shell must forward
 	// through the launcher unchanged.
 	entries := map[string]launchCase{

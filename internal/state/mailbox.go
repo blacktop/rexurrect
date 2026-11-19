@@ -28,13 +28,16 @@ import (
 // binds request and acknowledgement to one delivery record, and the hook id
 // binds them to one shell lifetime, so neither a late acknowledgement nor a
 // replaced shell can be mistaken for the current attempt. A zsh hook also
-// keeps `fifo` open, which is how it is woken.
+// keeps `fifo` open, which is how it is woken. After a fish hook runs a
+// command it publishes `exit` ("<attempt> <status> <milliseconds>") once that
+// command finishes, so a resume that failed at once can be reported.
 const (
 	deliverDir     = "deliver"
 	mailboxReady   = "ready"
 	mailboxRequest = "request"
 	mailboxAck     = "ack"
 	mailboxFIFO    = "fifo"
+	mailboxExit    = "exit"
 	maxMailboxFile = 8192
 	mailboxGrace   = time.Minute
 	// DeliveryModeRun asks the hook to run the command.
@@ -60,6 +63,13 @@ type DeliveryHook struct {
 type DeliveryAck struct {
 	Attempt string
 	Outcome string
+}
+
+// DeliveryExit is how the command a hook ran for one attempt finished.
+type DeliveryExit struct {
+	Attempt  string
+	Status   int
+	Duration time.Duration
 }
 
 // NewDeliveryAttempt names one delivery attempt.
@@ -169,6 +179,32 @@ func (s *Store) DeliveryAck(block snapshot.SourceID) (DeliveryAck, bool, error) 
 		return DeliveryAck{}, false, errors.New("malformed delivery acknowledgement")
 	}
 	return DeliveryAck{Attempt: fields[0], Outcome: fields[1]}, true, nil
+}
+
+// DeliveryExit reads how the command the hook ran last finished, if it has;
+// the caller matches its attempt.
+func (s *Store) DeliveryExit(block snapshot.SourceID) (DeliveryExit, bool, error) {
+	dir, ok, err := s.mailbox(block)
+	if err != nil || !ok {
+		return DeliveryExit{}, false, err
+	}
+	data, err := readBounded(filepath.Join(dir, mailboxExit), mailboxExit, maxMailboxFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return DeliveryExit{}, false, nil
+	}
+	if err != nil {
+		return DeliveryExit{}, false, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) != 3 || !ValidDeliveryAttempt(fields[0]) {
+		return DeliveryExit{}, false, errors.New("malformed delivery exit")
+	}
+	status, statusErr := strconv.ParseUint(fields[1], 10, 8)
+	ms, msErr := strconv.ParseUint(fields[2], 10, 32)
+	if statusErr != nil || msErr != nil {
+		return DeliveryExit{}, false, errors.New("malformed delivery exit")
+	}
+	return DeliveryExit{Attempt: fields[0], Status: int(status), Duration: time.Duration(ms) * time.Millisecond}, true, nil
 }
 
 // DeliveryFIFO is the path of the fifo a zsh hook listens on, when the

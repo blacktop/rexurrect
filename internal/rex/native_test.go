@@ -244,11 +244,42 @@ func TestNativeRestorePrivateServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	logged, err := logStore.LoadDeliveries(gen1.HostID, kept.InstanceID)
+	// A fish pane ran the resume command, which fails here because the
+	// private PATH has no claude. Wait for its hook to report the exit, so
+	// what the next cycle records is fixed.
+	resumed := slices.IndexFunc(kept.Deliveries, func(d state.Delivery) bool { return d.Outcome == state.DeliveryResumed })
+	if err == nil && resumed >= 0 {
+		awaitExit(t, logStore, kept.Deliveries[resumed].BlockID, kept.Deliveries[resumed].Attempt)
+	}
 	if err := errors.Join(err, logStore.Close()); err != nil || !reflect.DeepEqual(logged.Outcomes(), kept.Deliveries) {
 		t.Fatalf("delivery log of this instance: %+v %v, want %+v", logged, err, kept.Deliveries)
 	}
-	if again, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout); err != nil || again.State != "same_instance" || again.Native != 0 || again.SavedGeneration != 3 {
+	again, err := s.client.AutoCycle(t.Context(), dir, DefaultAutoWait, privateCycleTimeout)
+	if err != nil || again.State != "same_instance" || again.Native != 0 || again.SavedGeneration != 3 {
 		t.Fatalf("same-instance cycle after native restore: %+v %v", again, err)
+	}
+	// That cycle marks the failed resume and changes nothing else; with no
+	// resume to check it records nothing.
+	settled := kept.Deliveries
+	if resumed >= 0 {
+		if len(again.Deliveries) != len(kept.Deliveries) {
+			t.Fatalf("same-instance cycle deliveries: %+v", again.Deliveries)
+		}
+		for i, d := range again.Deliveries {
+			want := kept.Deliveries[i]
+			if i == resumed {
+				if d.Outcome != state.DeliveryFailed || !strings.HasPrefix(d.Reason, "exited with status 127 after ") {
+					t.Fatalf("failed resume recorded as %+v", d)
+				}
+				want.Outcome, want.Reason = d.Outcome, d.Reason
+			}
+			if d != want {
+				t.Fatalf("same-instance cycle changed %+v to %+v", kept.Deliveries[i], d)
+			}
+		}
+		settled = again.Deliveries
+	} else if len(again.Deliveries) != 0 {
+		t.Fatalf("same-instance cycle recorded %+v with no resume to check", again.Deliveries)
 	}
 	// The current generation matches what Rex restored, so an explicit
 	// restore of it keeps both sessions without creating anything. Its
@@ -258,8 +289,8 @@ func TestNativeRestorePrivateServer(t *testing.T) {
 	if err != nil || explicit.Outcome != "complete" || explicit.Native != 2 || len(listSessions(t, s.client)) != liveCount {
 		t.Fatalf("explicit restore of the current generation: %+v %v", explicit, err)
 	}
-	if !reflect.DeepEqual(explicit.Deliveries, kept.Deliveries) {
-		t.Fatalf("restoring generation 3 on the same instance changed deliveries: %+v, want %+v", explicit.Deliveries, kept.Deliveries)
+	if !reflect.DeepEqual(explicit.Deliveries, settled) {
+		t.Fatalf("restoring generation 3 on the same instance changed deliveries: %+v, want %+v", explicit.Deliveries, settled)
 	}
 	// A session destroyed after the last save is absent from Rex's snapshot
 	// too, so the next restart restores one natively and the cycle creates

@@ -254,39 +254,16 @@ func TestDeliverNativeSettlesInterruptedAttempts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := deliveryClient(t, t.TempDir())
-			store := openState(t)
-			block := snapshot.Block{ID: deliveryBlock(1), CWD: "/", AgentResume: resumeReceipt(deliveryBlock(1))}
-			e, latest := deliveryEnvelope(t, 3, []snapshot.Block{block})
-			target := serverIdentity{HostID: "host", InstanceID: "instance"}
-			attempt := "0000000000000000000000000000000a"
-			log, err := store.LoadDeliveries("host", "instance")
-			if err != nil {
-				t.Fatal(err)
-			}
-			intent, _ := state.DeliveryFor(e, deliverySession, block)
-			intent.Outcome, intent.Attempt, intent.Shell = state.DeliveryIntent, attempt, "fish"
-			if err := store.RecordDelivery(e, &log, intent); err != nil {
-				t.Fatal(err)
-			}
-			box := filepath.Join(store.Dir(), "deliver", strings.TrimPrefix(string(block.ID), "block:"))
-			if err := os.MkdirAll(box, 0700); err != nil {
-				t.Fatal(err)
-			}
-			for name, content := range tc.files {
-				if err := os.WriteFile(filepath.Join(box, name), []byte(strings.ReplaceAll(content, "ATTEMPT", attempt)), 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			deliveries, changed, err := c.deliverNative(t.Context(), store, e, latest, target)
+			f := newOpenAttempt(t, tc.files)
+			deliveries, changed, err := f.deliver(t)
 			if err != nil || !changed || len(deliveries) != 1 {
 				t.Fatalf("settling: %+v changed=%v %v", deliveries, changed, err)
 			}
 			d := deliveries[0]
-			if d.Outcome != tc.outcome || !strings.Contains(d.Reason, tc.reason) || d.Attempt != attempt || d.Shell != "fish" {
+			if d.Outcome != tc.outcome || !strings.Contains(d.Reason, tc.reason) || d.Attempt != openAttemptID || d.Shell != "fish" {
 				t.Fatalf("settled %+v, want %s %q", d, tc.outcome, tc.reason)
 			}
-			entries, err := os.ReadDir(box)
+			entries, err := os.ReadDir(f.box)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -348,4 +325,100 @@ func TestDeliverNativeWaitsForLateAnnouncement(t *testing.T) {
 	if err != nil || len(deliveries) != 1 || deliveries[0].Outcome != state.DeliverySkipped || !strings.Contains(deliveries[0].Reason, "did not claim") || deliveries[0].Attempt == "" {
 		t.Fatalf("with a late announcement: %+v %v", deliveries, err)
 	}
+}
+
+// A resumed block whose command the hook reports as exiting nonzero soon
+// after it started is marked failed, once. A clean exit, a late one, a
+// report from another attempt, a malformed report or none at all leaves
+// the block resumed. No pane is consulted and nothing is sent.
+func TestDeliverNativeReportsEarlyExit(t *testing.T) {
+	cases := []struct {
+		name   string
+		exit   string
+		failed string
+	}{
+		{"nonzero soon after starting", "ATTEMPT 127 25800\n", "exited with status 127 after 25.8s"},
+		{"clean exit", "ATTEMPT 0 900\n", ""},
+		{"nonzero after the window", "ATTEMPT 1 120000\n", ""},
+		{"another attempt", "ffffffffffffffffffffffffffffffff 127 100\n", ""},
+		{"malformed report", "ATTEMPT 127\n", ""},
+		{"still running", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{}
+			if tc.exit != "" {
+				files["exit"] = tc.exit
+			}
+			f := newOpenAttempt(t, files)
+			if err := f.store.ResolveDelivery(&f.log, f.intent.BlockID, state.DeliveryResumed, ""); err != nil {
+				t.Fatal(err)
+			}
+			deliveries, changed, err := f.deliver(t)
+			if err != nil || changed != (tc.failed != "") || len(deliveries) != 1 {
+				t.Fatalf("first pass: %+v changed=%v %v", deliveries, changed, err)
+			}
+			d := deliveries[0]
+			want := state.DeliveryResumed
+			if tc.failed != "" {
+				want = state.DeliveryFailed
+			}
+			if d.Outcome != want || d.Reason != tc.failed || d.Attempt != openAttemptID || d.Input != f.intent.Input {
+				t.Fatalf("recorded %+v, want %s %q", d, want, tc.failed)
+			}
+			again, changed, err := f.deliver(t)
+			if err != nil || changed || !reflect.DeepEqual(again, deliveries) {
+				t.Fatalf("second pass: %+v changed=%v %v", again, changed, err)
+			}
+		})
+	}
+}
+
+// openAttemptID is the attempt newOpenAttempt records.
+const openAttemptID = "0000000000000000000000000000000a"
+
+// openAttempt is one receipt block whose fish delivery has a durable intent
+// for openAttemptID, and the block's mailbox: the state an interrupted or
+// answered delivery leaves behind.
+type openAttempt struct {
+	c      Client
+	store  *state.Store
+	e      state.Envelope
+	latest map[snapshot.SourceID]state.JournalRecord
+	log    state.DeliveryLog
+	intent state.Delivery
+	box    string
+}
+
+// newOpenAttempt records the intent and writes files into the mailbox,
+// with every ATTEMPT in their content replaced by openAttemptID.
+func newOpenAttempt(t *testing.T, files map[string]string) *openAttempt {
+	t.Helper()
+	f := &openAttempt{c: deliveryClient(t, t.TempDir()), store: openState(t)}
+	block := snapshot.Block{ID: deliveryBlock(1), CWD: "/", AgentResume: resumeReceipt(deliveryBlock(1))}
+	f.e, f.latest = deliveryEnvelope(t, 3, []snapshot.Block{block})
+	var err error
+	if f.log, err = f.store.LoadDeliveries("host", "instance"); err != nil {
+		t.Fatal(err)
+	}
+	f.intent, _ = state.DeliveryFor(f.e, deliverySession, block)
+	f.intent.Outcome, f.intent.Attempt, f.intent.Shell = state.DeliveryIntent, openAttemptID, "fish"
+	if err := f.store.RecordDelivery(f.e, &f.log, f.intent); err != nil {
+		t.Fatal(err)
+	}
+	f.box = filepath.Join(f.store.Dir(), "deliver", strings.TrimPrefix(string(block.ID), "block:"))
+	if err := os.MkdirAll(f.box, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(f.box, name), []byte(strings.ReplaceAll(content, "ATTEMPT", openAttemptID)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
+}
+
+// deliver runs one delivery pass over the fixture's instance.
+func (f *openAttempt) deliver(t *testing.T) ([]state.Delivery, bool, error) {
+	return f.c.deliverNative(t.Context(), f.store, f.e, f.latest, serverIdentity{HostID: "host", InstanceID: "instance"})
 }

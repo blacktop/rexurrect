@@ -26,6 +26,11 @@ const (
 	deliveryAckPoll  = 50 * time.Millisecond
 	deliveryHookWait = 3 * time.Second
 	deliveryHookPoll = 100 * time.Millisecond
+	// deliveryEarlyExit bounds how long a resumed command may run before a
+	// nonzero exit counts as the resume failing rather than the agent ending.
+	// It stands in for "the agent never started", so quitting a resumed
+	// agent with a nonzero status inside it (Ctrl-C) also reads as failed.
+	deliveryEarlyExit = 2 * time.Minute
 )
 
 // deliverNative hands, for every block of a natively restored session that
@@ -38,8 +43,10 @@ const (
 // types: it asks the hook and records the answer. Each block gets one
 // terminal record per server instance, so a later cycle never delivers the
 // same command twice; an intent left by an interrupted run is settled from
-// what its request and acknowledgement show, never resent. changed reports
-// whether anything was recorded.
+// what its request and acknowledgement show, never resent. A resumed block
+// whose command the hook reports as exiting nonzero soon after it started
+// is marked failed, which sends nothing. changed reports whether anything
+// was recorded.
 func (c Client) deliverNative(ctx context.Context, store *state.Store, e state.Envelope, latest map[snapshot.SourceID]state.JournalRecord, target serverIdentity) (outcomes []state.Delivery, changed bool, err error) {
 	log, err := store.LoadDeliveries(target.HostID, target.InstanceID)
 	if err != nil {
@@ -57,23 +64,40 @@ func (c Client) deliverNative(ctx context.Context, store *state.Store, e state.E
 		}
 		for _, b := range session.Blocks() {
 			d, ok := state.DeliveryFor(e, session.ID, *b)
-			previous := recorded[b.ID]
-			if !ok || r.IDMap[b.ID] == "" || previous.Terminal() {
+			if !ok || r.IDMap[b.ID] == "" {
 				continue
 			}
-			if previous.Outcome == state.DeliveryIntent {
-				outcome, reason := settleAttempt(store, previous, "interrupted before the hook claimed the request")
-				err = store.ResolveDelivery(&log, b.ID, outcome, reason)
-			} else {
-				err = c.deliverBlock(ctx, run, d, r.IDMap[session.ID], r.IDMap[b.ID])
-			}
+			recordedNow, err := c.nextDelivery(ctx, run, d, recorded[b.ID], r.IDMap[session.ID], r.IDMap[b.ID])
 			if err != nil {
 				return nil, false, err
 			}
-			changed = true
+			changed = changed || recordedNow
 		}
 	}
 	return log.Outcomes(), changed, nil
+}
+
+// nextDelivery records what one block calls for now, given its latest
+// record: a failed report for a resumed command that exited early, the
+// settlement of an intent an interrupted run left open, or a first
+// delivery. A block that is otherwise settled gets nothing, and recorded
+// says whether anything was written.
+func (c Client) nextDelivery(ctx context.Context, run deliveryRun, d, previous state.Delivery, session, block snapshot.LiveID) (recorded bool, err error) {
+	switch {
+	case previous.Outcome == state.DeliveryResumed:
+		reason, failed := earlyExit(run.store, previous)
+		if !failed {
+			return false, nil
+		}
+		return true, run.store.ResolveDelivery(run.log, d.BlockID, state.DeliveryFailed, reason)
+	case previous.Terminal():
+		return false, nil
+	case previous.Outcome == state.DeliveryIntent:
+		outcome, reason := settleAttempt(run.store, previous, "interrupted before the hook claimed the request")
+		return true, run.store.ResolveDelivery(run.log, d.BlockID, outcome, reason)
+	default:
+		return true, c.deliverBlock(ctx, run, d, session, block)
+	}
 }
 
 // deliveryRun is what every delivery of one deliverNative call shares: the
@@ -227,6 +251,19 @@ func settleAttempt(store *state.Store, d state.Delivery, unclaimed string) (outc
 		return ackOutcome(ack.Outcome, d.Kind)
 	}
 	return state.DeliveryUncertain, "no unclaimed request and no acknowledgement of this attempt"
+}
+
+// earlyExit reports whether the hook says the command it ran for d's
+// attempt exited nonzero within deliveryEarlyExit, and how. An exit file
+// that is missing, unreadable, from another attempt, clean or late changes
+// nothing: the record already says the command ran, and the exit report is
+// the hook's to write.
+func earlyExit(store *state.Store, d state.Delivery) (reason string, failed bool) {
+	exit, ok, err := store.DeliveryExit(d.BlockID)
+	if err != nil || !ok || exit.Attempt != d.Attempt || exit.Status == 0 || exit.Duration >= deliveryEarlyExit {
+		return "", false
+	}
+	return fmt.Sprintf("exited with status %d after %s", exit.Status, exit.Duration.Round(100*time.Millisecond)), true
 }
 
 // wakeHook wakes the hook: SIGURG to the fish process Rex reports as the

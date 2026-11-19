@@ -94,6 +94,25 @@ func TestDeliveryMailbox(t *testing.T) {
 	if ack, ok, err := s.DeliveryAck(block); err != nil || !ok || ack != (DeliveryAck{Attempt: attemptB, Outcome: "skipped:pending_input"}) {
 		t.Fatalf("acknowledgement: %+v ok=%v %v", ack, ok, err)
 	}
+	// The exit report names its attempt, a status from 0 to 255 and the run
+	// time in milliseconds; anything else is an error, not a report.
+	if _, ok, err := s.DeliveryExit(block); err != nil || ok {
+		t.Fatalf("exit before the command finished: ok=%v %v", ok, err)
+	}
+	for _, bad := range []string{attemptA + " 127\n", "short 127 25800\n", attemptA + " 256 1\n", attemptA + " -1 1\n", attemptA + " 1 -5\n", attemptA + " 1 1.5\n", attemptA + " x 1\n"} {
+		if err := os.WriteFile(filepath.Join(box, "exit"), []byte(bad), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.DeliveryExit(block); err == nil {
+			t.Errorf("exit report %q was accepted", bad)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(box, "exit"), []byte(attemptA+" 127 25800\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if exit, ok, err := s.DeliveryExit(block); err != nil || !ok || exit != (DeliveryExit{Attempt: attemptA, Status: 127, Duration: 25800 * time.Millisecond}) {
+		t.Fatalf("exit report: %+v ok=%v %v", exit, ok, err)
+	}
 	// Revoking succeeds exactly once for an unclaimed request; a claimed
 	// (renamed) request cannot be revoked.
 	if revoked, err := s.RevokeDeliveryRequest(block); err != nil || !revoked {

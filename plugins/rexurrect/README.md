@@ -110,6 +110,9 @@ What the launcher does:
   command name with rexurrect's normal lock wait. The SessionEnd hook is a
   best-effort first attempt under its host's short deadline; this is the
   backstop.
+- When the agent cannot be executed (its binary is missing or not
+  executable, as during an update), says so, exits 127 and keeps the pane's
+  receipt: no session ran, so the receipt still names what to resume.
 - Preserves the arguments, the environment, and the exit status. A failed
   cleanup returns its own error instead of the agent's status.
 

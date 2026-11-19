@@ -158,6 +158,61 @@ func TestDeliveryLogTransitions(t *testing.T) {
 	}
 }
 
+// failed is the one record allowed after a terminal outcome: it follows
+// resumed once, for the same attempt, with a reason, and ends the block.
+// It never follows an intent, a typed command or a skip.
+func TestDeliveryLogFailedFollowsResumed(t *testing.T) {
+	s := openStore(t)
+	e := deliveryFixture()
+	l := NewDeliveryLog(e.HostID, e.InstanceID)
+	resume := Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryReceipt, Kind: DeliveryReceipt, Input: resumeInput, Attempt: attemptA}
+	typed := Delivery{Generation: e.Generation, SessionID: deliverySession, BlockID: deliveryForeground, Kind: DeliveryForeground, Input: "make test", Attempt: attemptB}
+	for _, d := range []Delivery{with(resume, DeliveryIntent, ""), with(typed, DeliveryIntent, "")} {
+		if err := s.RecordDelivery(e, &l, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ResolveDelivery(&l, deliveryReceipt, DeliveryFailed, "exited with status 127 after 1s"); err == nil {
+		t.Fatal("failed was accepted straight after an intent")
+	}
+	if err := s.ResolveDelivery(&l, deliveryForeground, DeliveryTypedOnly, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveDelivery(&l, deliveryForeground, DeliveryFailed, "exited with status 1 after 1s"); err == nil {
+		t.Fatal("failed was accepted after a typed command")
+	}
+	if err := s.ResolveDelivery(&l, deliveryReceipt, DeliveryResumed, ""); err != nil {
+		t.Fatal(err)
+	}
+	otherAttempt := with(resume, DeliveryFailed, "exited with status 127 after 1s")
+	otherAttempt.Attempt = attemptB
+	if err := s.RecordDelivery(e, &l, otherAttempt); err == nil {
+		t.Fatal("failed was accepted for another attempt")
+	}
+	if err := s.ResolveDelivery(&l, deliveryReceipt, DeliveryFailed, ""); err == nil {
+		t.Fatal("failed was accepted without a reason")
+	}
+	if err := s.ResolveDelivery(&l, deliveryReceipt, DeliveryUncertain, "late"); err == nil {
+		t.Fatal("uncertain was accepted after resumed")
+	}
+	if err := s.ResolveDelivery(&l, deliveryReceipt, DeliveryFailed, "exited with status 127 after 1s"); err != nil {
+		t.Fatal(err)
+	}
+	for _, outcome := range []string{DeliveryIntent, DeliveryResumed, DeliveryFailed, DeliverySkipped} {
+		if err := s.ResolveDelivery(&l, deliveryReceipt, outcome, "again"); err == nil {
+			t.Errorf("%s after failed was accepted", outcome)
+		}
+	}
+	loaded, err := s.LoadDeliveries(e.HostID, e.InstanceID)
+	if err != nil || !reflect.DeepEqual(loaded, l) {
+		t.Fatalf("reloaded log: %+v %v", loaded, err)
+	}
+	got := loaded.Latest()[deliveryReceipt]
+	if got.Outcome != DeliveryFailed || got.Attempt != attemptA || got.Input != resumeInput {
+		t.Fatalf("failed record: %+v", got)
+	}
+}
+
 // The log belongs to the server instance, not to a generation: a block
 // delivered from one generation stays delivered when a later generation is
 // restored on the same instance, and an intent from a generation that has

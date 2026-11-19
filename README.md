@@ -31,8 +31,10 @@ generations are retained.
 Rex preview.23 and later bring sessions back on their own, with the same IDs.
 rexurrect keeps every session Rex restored and creates only the ones Rex did
 not bring back, so nothing is duplicated. Panes Rex restores come back as plain
-shells for now: their receipts and recorded commands are kept but not yet
-delivered. See [Sessions Rex restores itself](docs/compatibility.md#sessions-rex-restores-itself).
+shells. With the shell hook installed, fish runs a pane's resume command, and
+the report marks it failed if it exits nonzero right away; recorded commands,
+and every command in zsh, are typed and left for you to run. See
+[Sessions Rex restores itself](docs/compatibility.md#sessions-rex-restores-itself).
 
 For a source install, see [Building from source](CONTRIBUTING.md#build).
 Custom paths and other options are covered in the
