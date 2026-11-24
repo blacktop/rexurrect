@@ -90,7 +90,8 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	case "set":
 		return c.SetReceipt(ctx, *dir, r)
 	case "clear":
-		return c.ClearReceipt(ctx, *dir, r.Key, guard)
+		guard.Session = r.SessionID
+		return c.ClearReceipt(ctx, *dir, r.BlockID, guard)
 	default:
 		// Filters use the same strict ID grammar as registration.
 		if r.SessionID != "" && !receipt.ValidSessionID(r.SessionID) || r.BlockID != "" && !receipt.ValidBlockID(r.BlockID) {

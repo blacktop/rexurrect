@@ -124,18 +124,18 @@ func TestReceiptStore(t *testing.T) {
 		{Command: "codex", Conversation: r.Conversation},
 		{Command: r.Harness, Conversation: "00000000-0000-0000-0000-000000000000"},
 	} {
-		if err := s.ClearReceipt("host", r.Key, miss); err != nil {
+		if err := s.ClearReceipt("host", r.BlockID, miss); err != nil {
 			t.Fatal(err)
 		}
 		if unchanged, err := os.ReadFile(path); err != nil || !bytes.Equal(before, unchanged) {
 			t.Fatalf("guard %+v changed store", miss)
 		}
 	}
-	if err := s.ClearReceipt("host", r.Key, receipt.ClearGuard{Command: "-zsh"}); err == nil {
+	if err := s.ClearReceipt("host", r.BlockID, receipt.ClearGuard{Command: "-zsh"}); err == nil {
 		t.Fatal("accepted invalid command guard")
 	}
 	exact := receipt.ClearGuard{Command: r.Harness, Conversation: r.Conversation}
-	if err := s.ClearReceipt("host", r.Key, exact); err != nil {
+	if err := s.ClearReceipt("host", r.BlockID, exact); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.LoadReceipts("host"); err != nil || len(got) != 0 {

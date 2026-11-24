@@ -92,7 +92,7 @@ esac
 			if action == "set" {
 				err = c.SetReceipt(ctx, dir, r)
 			} else {
-				err = c.ClearReceipt(ctx, dir, r.Key, receipt.ClearGuard{Conversation: r.Conversation})
+				err = c.ClearReceipt(ctx, dir, r.BlockID, receipt.ClearGuard{Conversation: r.Conversation})
 			}
 			if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, state.ErrLocked) || !strings.Contains(err.Error(), "waiting for state lock") {
 				t.Fatalf("receipt %s timeout: %v", action, err)

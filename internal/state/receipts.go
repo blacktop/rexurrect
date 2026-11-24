@@ -106,9 +106,9 @@ func (s *Store) SetReceipt(host string, r receipt.Receipt) error {
 	return s.WriteReceipts(host, append(entries, r))
 }
 
-func (s *Store) ClearReceipt(host string, key receipt.Key, guard receipt.ClearGuard) error {
-	if err := key.ValidateClear(); err != nil {
-		return err
+func (s *Store) ClearReceipt(host, block string, guard receipt.ClearGuard) error {
+	if !receipt.ValidBlockID(block) {
+		return errors.New("receipt clear requires a full Rex block ID")
 	}
 	if err := guard.Validate(); err != nil {
 		return err
@@ -118,7 +118,7 @@ func (s *Store) ClearReceipt(host string, key receipt.Key, guard receipt.ClearGu
 		return err
 	}
 	for i, r := range entries {
-		if key.Selects(r) && guard.Matches(r) {
+		if r.BlockID == block && guard.Matches(r) {
 			return s.WriteReceipts(host, slices.Delete(entries, i, i+1))
 		}
 	}

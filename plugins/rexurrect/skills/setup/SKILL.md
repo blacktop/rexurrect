@@ -9,9 +9,8 @@ not install rexurrect's binary or automatic job.
 
 1. Run `rexurrect version`, `rexurrect receipt set --help`,
    `rexurrect receipt clear --help`, and `jq --version`. Confirm `set` accepts
-   `--host` and `--command`, its `--session` help says it finds the session
-   holding `--block` (the hooks pass only the block), and `clear` accepts the
-   `--command` guard. For
+   `--host` and `--command` with `--session` optional (the hooks pass only
+   `--block`), and `clear` accepts the `--command` guard. For
    Codex, confirm `codex --help` lists `--no-daemon`. Use the endpoint and state directory the user supplies, or
    the README's macOS defaults. Do not inspect credentials, shell startup
    files, agent home directories, or environment dumps to infer an account.

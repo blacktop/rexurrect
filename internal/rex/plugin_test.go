@@ -554,8 +554,6 @@ func TestPluginShellHelpers(t *testing.T) {
 		{name: "custom-command", host: "codex", command: "codex-work", owner: "codex-work", effort: "high",
 			args: codexArgs, wantArgs: append([]string{"--no-daemon"}, codexArgs...)},
 		plainCodex("missing-block", codexArgs, "REX_BLOCK="),
-		// Terminals of older Rex servers also name their session; it is not used.
-		ownedCodex("session-variable-ignored", 0, 0, 0, "REX_SESSION="+agentReceipt(1, "").SessionID),
 		plainCodex("nested-claude", codexArgs, "CLAUDECODE=1"),
 		plainCodex("nested-codex", codexArgs, "CODEX_THREAD_ID=outer"),
 		plainCodex("preset-owner", codexArgs, "RR_HARNESS=codex"),

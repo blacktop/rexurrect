@@ -94,21 +94,6 @@ func (k Key) Validate() error {
 	return nil
 }
 
-// ValidateClear checks a key given to clear. The session may be left out:
-// block IDs are unique, so the block alone names the receipt.
-func (k Key) ValidateClear() error {
-	if !ValidBlockID(k.BlockID) || k.SessionID != "" && !ValidSessionID(k.SessionID) {
-		return errors.New("receipt clear requires a full Rex block ID and, if given, a full session ID")
-	}
-	return nil
-}
-
-// Selects reports whether r is the receipt k names: same block, and same
-// session unless k leaves it out.
-func (k Key) Selects(r Receipt) bool {
-	return r.BlockID == k.BlockID && (k.SessionID == "" || r.SessionID == k.SessionID)
-}
-
 // Legacy reports whether r uses the pre-format-2 harness form.
 func (r Receipt) Legacy() bool { return r.Harness != "" }
 
@@ -185,16 +170,22 @@ func (r Receipt) validateForm() error {
 	return nil
 }
 
-// ClearGuard narrows a clear to the receipt whose fields match every supplied
-// guard. An empty field matches any receipt under the key.
+// ClearGuard narrows a clear to the receipt of a block whose fields match
+// every supplied guard. An empty field matches any receipt of the block; block
+// IDs are unique, so the session is only a check.
 type ClearGuard struct {
+	Session      string
 	Command      string
 	Conversation string
 }
 
-// Validate rejects a supplied command outside the name grammar and a supplied
-// conversation that is not a UUID. Empty fields are wildcards and always pass.
+// Validate rejects a supplied session that is not a full Rex session ID, a
+// command outside the name grammar and a conversation that is not a UUID.
+// Empty fields are wildcards and always pass.
 func (g ClearGuard) Validate() error {
+	if g.Session != "" && !ValidSessionID(g.Session) {
+		return errors.New("receipt session guard must be a full Rex session ID")
+	}
 	if g.Command != "" && !ValidCommand(g.Command) {
 		return errors.New("receipt command guard must be a bare command name")
 	}
@@ -210,7 +201,8 @@ func (g ClearGuard) Validate() error {
 // UUIDs compare case-insensitively because ValidConversationID accepts both
 // hex cases.
 func (g ClearGuard) Matches(r Receipt) bool {
-	return (g.Command == "" || r.Name() == g.Command) &&
+	return (g.Session == "" || r.SessionID == g.Session) &&
+		(g.Command == "" || r.Name() == g.Command) &&
 		(g.Conversation == "" || strings.EqualFold(r.Conversation, g.Conversation))
 }
 

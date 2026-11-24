@@ -127,19 +127,18 @@ func (c Client) shellMatches(ctx context.Context, session, block string) (int, e
 	return matches, nil
 }
 
-// ClearReceipt removes the receipt key selects when every supplied guard
-// matches. A key without a session selects its block in any session.
+// ClearReceipt removes the receipt of block when every supplied guard matches.
 func (c Client) ClearReceipt(
-	ctx context.Context, dir string, key receipt.Key, guard receipt.ClearGuard,
+	ctx context.Context, dir, block string, guard receipt.ClearGuard,
 ) error {
-	if err := key.ValidateClear(); err != nil {
-		return err
+	if !receipt.ValidBlockID(block) {
+		return errors.New("receipt clear requires a full Rex block ID")
 	}
 	if err := guard.Validate(); err != nil {
 		return err
 	}
 	return c.withReceipts(ctx, dir, func(_ context.Context, store *state.Store, id serverIdentity) error {
-		return store.ClearReceipt(id.HostID, key, guard)
+		return store.ClearReceipt(id.HostID, block, guard)
 	})
 }
 

@@ -49,7 +49,8 @@ esac
 	if err := json.Unmarshal(data, &entries); err != nil {
 		t.Fatal(err)
 	}
-	want := []receipt.Receipt{{SessionID: session, BlockID: block, Host: "claude", Command: "claude-work", Conversation: conversation, Model: "model-1", Effort: "high"}}
+	claudeWant := []receipt.Receipt{{SessionID: session, BlockID: block, Host: "claude", Command: "claude-work", Conversation: conversation, Model: "model-1", Effort: "high"}}
+	want := claudeWant
 	if !reflect.DeepEqual(entries, want) {
 		t.Fatalf("list: %s", data)
 	}
@@ -182,7 +183,7 @@ esac
 		t.Fatalf("set without --session: %v", err)
 	}
 	data, err = invoke("list", "--json")
-	want = []receipt.Receipt{{SessionID: session, BlockID: block, Host: "claude", Command: "claude-work", Conversation: conversation, Model: "model-1", Effort: "high"}}
+	want = claudeWant
 	entries = nil
 	if err != nil || json.Unmarshal(data, &entries) != nil || !reflect.DeepEqual(entries, want) {
 		t.Fatalf("set without --session/list: %s %v", data, err)
