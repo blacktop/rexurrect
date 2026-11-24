@@ -31,7 +31,8 @@ func runReceipt(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	var guard receipt.ClearGuard
 	var legacyGuard string
 	var jsonOutput bool
-	flags.StringVar(&r.SessionID, "session", "", "full Rex session ID (optional filter for list)")
+	flags.StringVar(&r.SessionID, "session", "",
+		"optional full Rex session ID; set finds the one holding --block, clear and list match any")
 	flags.StringVar(&r.BlockID, "block", "", "full Rex block ID (optional filter for list)")
 	if action == "set" || action == "clear" {
 		flags.DurationVar(&lockTimeout, "lock-timeout", lockTimeout, "state lock wait, at most 60s")

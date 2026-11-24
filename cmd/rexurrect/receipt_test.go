@@ -22,6 +22,7 @@ func TestReceiptCLI(t *testing.T) {
 case "$6:$8" in
   whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"instance","rex_version":"version"}' ;;
   api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
+  api:session.list) printf '%s\n' '{"sessions":[{"session_id":"` + session + `"}]}' ;;
   api:session.list_blocks) printf '%s\n' '{"blocks":[{"block_id":"` + block + `","flavor":"com.superlogical.terminal.shell"}]}' ;;
   *) exit 1 ;;
 esac
@@ -173,5 +174,32 @@ esac
 	data, err = invoke("list", "--json")
 	if err != nil || string(data) != "[]\n" {
 		t.Fatalf("released clear/list: %s %v", data, err)
+	}
+
+	// A pane that names only its block: set finds the session holding it, and
+	// clear matches the block in any session.
+	if _, err := invoke("set", set[2:]...); err != nil {
+		t.Fatalf("set without --session: %v", err)
+	}
+	data, err = invoke("list", "--json")
+	want = []receipt.Receipt{{SessionID: session, BlockID: block, Host: "claude", Command: "claude-work", Conversation: conversation, Model: "model-1", Effort: "high"}}
+	entries = nil
+	if err != nil || json.Unmarshal(data, &entries) != nil || !reflect.DeepEqual(entries, want) {
+		t.Fatalf("set without --session/list: %s %v", data, err)
+	}
+	if _, err := invoke("set", "--block", "block:01234567-89ab-4cde-8fab-00000000ffff", "--host", "claude", "--command", "claude", "--conversation", conversation); err == nil {
+		t.Fatal("set registered a block that no session holds")
+	}
+	if _, err := invoke("clear", "--block", block, "--command", "claude-work"); err != nil {
+		t.Fatalf("clear without --session: %v", err)
+	}
+	data, err = invoke("list", "--json")
+	if err != nil || string(data) != "[]\n" {
+		t.Fatalf("clear without --session/list: %s %v", data, err)
+	}
+	for _, bad := range [][]string{{}, {"--block", "bad"}, {"--block", block, "--session", "bad"}} {
+		if _, err := invoke("clear", bad...); err == nil {
+			t.Fatalf("accepted clear %q", bad)
+		}
 	}
 }

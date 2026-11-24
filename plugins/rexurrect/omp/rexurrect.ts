@@ -10,10 +10,9 @@ type Ctx = {
 // RR_LAUNCHER_PID. Only the process the launcher started is the owner: a nested omp
 // inherits the markers and the terminal but has another parent. Read once at load,
 // because child sessions reuse this module.
-const { RR_HOST, RR_HARNESS: command, RR_LAUNCHER_PID, REX_SESSION: session, REX_BLOCK: block } = process.env;
+const { RR_HOST, RR_HARNESS: command, RR_LAUNCHER_PID, REX_BLOCK: block } = process.env;
 const { REXURRECT_SERVER: server, REXURRECT_STATE_DIR: stateDir } = process.env;
-const owned =
-	RR_HOST === "omp" && !!command && !!session && !!block && !!server && !!stateDir && process.ppid === Number(RR_LAUNCHER_PID);
+const owned = RR_HOST === "omp" && !!command && !!block && !!server && !!stateDir && process.ppid === Number(RR_LAUNCHER_PID);
 
 export default function (pi: ExtensionAPI) {
 	let registered: string | undefined;
@@ -28,7 +27,7 @@ export default function (pi: ExtensionAPI) {
 	const receipt = (verb: "set" | "clear", id: string, wait: string, call: string, timeout: number, signal?: AbortSignal) =>
 		pi.exec(
 			"rexurrect",
-			["receipt", verb, "--server", server!, "--state-dir", stateDir!, "--session", session!, "--block", block!, "--command", command!, "--conversation", id, "--lock-timeout", wait, "--call-timeout", call, ...(verb === "set" ? ["--host", "omp"] : [])],
+			["receipt", verb, "--server", server!, "--state-dir", stateDir!, "--block", block!, "--command", command!, "--conversation", id, "--lock-timeout", wait, "--call-timeout", call, ...(verb === "set" ? ["--host", "omp"] : [])],
 			{ timeout, signal },
 		);
 

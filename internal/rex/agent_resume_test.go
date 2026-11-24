@@ -307,9 +307,10 @@ func TestAgentResumeRoundTrip(t *testing.T) {
 		}
 		// The agents are executables on PATH, so they resolve in whichever
 		// shell Rex starts. Custom command names register through the real
-		// receipt CLI with an explicit host. Legacy-only names never get a
-		// live agent that registers; a typed command for them would be a test
-		// failure.
+		// receipt CLI with an explicit host and only the pane's block, as
+		// terminals of Rex 0.1.0-preview.23 and later name no session.
+		// Legacy-only names never get a live agent that registers; a typed
+		// command for them would be a test failure.
 		bin := filepath.Join(s.root, "bin")
 		if err := os.Mkdir(bin, 0700); err != nil {
 			t.Fatal(err)
@@ -327,11 +328,11 @@ func TestAgentResumeRoundTrip(t *testing.T) {
 				metadata = ""
 			}
 			body := fmt.Sprintf(`#!/bin/sh
-'%[2]s' receipt set --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --host %[8]s --command %[1]s --conversation "$2"%[9]s || exit $?
-line=$(printf '%%s\t%%s\t%%s\t%%s' "$REX_SESSION" "$REX_BLOCK" "$(pwd -P)" %[1]s; for arg; do printf '\t%%s' "$arg"; done)
+'%[2]s' receipt set --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --block "$REX_BLOCK" --host %[8]s --command %[1]s --conversation "$2"%[9]s || exit $?
+line=$(printf '%%s\t%%s\t%%s' "$REX_BLOCK" "$(pwd -P)" %[1]s; for arg; do printf '\t%%s' "$arg"; done)
 printf '%%s\n' "$line" >> '%[6]s'
 read -r rr_wait || exit 1
-'%[2]s' receipt clear --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --session "$REX_SESSION" --block "$REX_BLOCK" --command %[1]s --conversation "$2" || exit $?
+'%[2]s' receipt clear --server 'unix://%[3]s' --state-dir '%[4]s' --rex '%[5]s' --block "$REX_BLOCK" --command %[1]s --conversation "$2" || exit $?
 printf '%%s\n' "$REX_BLOCK" >> '%[7]s'
 `, name, binary, s.client.Socket, filepath.Join(s.root, "saved"), s.client.Binary, marker, exited, host, metadata)
 			if host == "" {
@@ -440,7 +441,7 @@ printf '%%s\n' "$REX_BLOCK" >> '%[7]s'
 			}
 			continue
 		}
-		initial = append(initial, strings.Join(slices.Concat([]string{string(created.ID), string(block), cwd}, sourceArgs[i]), "\t"))
+		initial = append(initial, strings.Join(slices.Concat([]string{string(block), cwd}, sourceArgs[i]), "\t"))
 	}
 	waitMarker(initial)
 	saved, err := s.client.Save(t.Context(), dir, false)
@@ -503,7 +504,7 @@ printf '%%s\n' "$REX_BLOCK" >> '%[7]s'
 	}
 	var want []string
 	for i := range liveAgents {
-		want = append(want, strings.Join(slices.Concat([]string{string(result.IDMap[snapshot.SourceID(created.ID)]), string(result.IDMap[snapshot.SourceID(blocks[i])]), cwd}, sourceArgs[i]), "\t"))
+		want = append(want, strings.Join(slices.Concat([]string{string(result.IDMap[snapshot.SourceID(blocks[i])]), cwd}, sourceArgs[i]), "\t"))
 	}
 	waitMarker(want)
 	compareRestored(t, s.client, saved, result.IDMap)

@@ -58,25 +58,26 @@ func (c Client) withReceipts(ctx context.Context, dir string, use func(context.C
 
 // SetReceipt is the sole registration path for the CLI and integrations. A
 // shell block must be live on this server; process metadata is never consulted.
+// A receipt without a session takes the session that holds its block: Rex
+// terminals name their block in REX_BLOCK, and since Rex 0.1.0-preview.23 no
+// longer name their session.
 func (c Client) SetReceipt(ctx context.Context, dir string, r receipt.Receipt) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	if r.SessionID == "" && receipt.ValidBlockID(r.BlockID) {
+		session, err := c.blockSession(ctx, r.BlockID)
+		if err != nil {
+			return err
+		}
+		r.SessionID = session
+	}
 	if err := r.Validate(); err != nil {
 		return err
 	}
 	return c.withReceipts(ctx, dir, func(ctx context.Context, store *state.Store, id serverIdentity) error {
-		var listed struct {
-			Blocks []listedBlock `json:"blocks"`
-		}
-		if err := c.Call(ctx, "session.list_blocks", map[string]any{"session_id": r.SessionID}, &listed); err != nil {
+		matches, err := c.shellMatches(ctx, r.SessionID, r.BlockID)
+		if err != nil {
 			return err
-		}
-		if len(listed.Blocks) > 16384 {
-			return errors.New("too many registered blocks")
-		}
-		matches := 0
-		for _, block := range listed.Blocks {
-			if string(block.ID) == r.BlockID && block.Flavor == shellFlavor {
-				matches++
-			}
 		}
 		if matches != 1 {
 			return errors.New("receipt block is not a live Rex terminal in the selected session")
@@ -88,11 +89,50 @@ func (c Client) SetReceipt(ctx context.Context, dir string, r receipt.Receipt) e
 	})
 }
 
-// ClearReceipt removes the receipt under key when every supplied guard matches.
+// blockSession returns the session that holds block as a live shell.
+func (c Client) blockSession(ctx context.Context, block string) (string, error) {
+	sessions, err := c.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, session := range sessions {
+		matches, err := c.shellMatches(ctx, string(session), block)
+		if err != nil {
+			return "", err
+		}
+		if matches > 0 {
+			return string(session), nil
+		}
+	}
+	return "", errors.New("receipt block is not a live Rex terminal on this server")
+}
+
+// shellMatches counts the live shell blocks in session whose ID is block.
+func (c Client) shellMatches(ctx context.Context, session, block string) (int, error) {
+	var listed struct {
+		Blocks []listedBlock `json:"blocks"`
+	}
+	if err := c.Call(ctx, "session.list_blocks", map[string]any{"session_id": session}, &listed); err != nil {
+		return 0, err
+	}
+	if len(listed.Blocks) > 16384 {
+		return 0, errors.New("too many registered blocks")
+	}
+	matches := 0
+	for _, b := range listed.Blocks {
+		if string(b.ID) == block && b.Flavor == shellFlavor {
+			matches++
+		}
+	}
+	return matches, nil
+}
+
+// ClearReceipt removes the receipt key selects when every supplied guard
+// matches. A key without a session selects its block in any session.
 func (c Client) ClearReceipt(
 	ctx context.Context, dir string, key receipt.Key, guard receipt.ClearGuard,
 ) error {
-	if err := key.Validate(); err != nil {
+	if err := key.ValidateClear(); err != nil {
 		return err
 	}
 	if err := guard.Validate(); err != nil {

@@ -107,7 +107,7 @@ func (s *Store) SetReceipt(host string, r receipt.Receipt) error {
 }
 
 func (s *Store) ClearReceipt(host string, key receipt.Key, guard receipt.ClearGuard) error {
-	if err := key.Validate(); err != nil {
+	if err := key.ValidateClear(); err != nil {
 		return err
 	}
 	if err := guard.Validate(); err != nil {
@@ -118,7 +118,7 @@ func (s *Store) ClearReceipt(host string, key receipt.Key, guard receipt.ClearGu
 		return err
 	}
 	for i, r := range entries {
-		if r.Key == key && guard.Matches(r) {
+		if key.Selects(r) && guard.Matches(r) {
 			return s.WriteReceipts(host, slices.Delete(entries, i, i+1))
 		}
 	}

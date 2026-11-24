@@ -847,10 +847,18 @@ state directory to the same values used by the automatic job:
 ```sh
 rr_server=unix:///absolute/path/rex.sock
 rr_state="$HOME/Library/Application Support/rexurrect"
-rexurrect receipt set --server "$rr_server" --state-dir "$rr_state" --session "$REX_SESSION" --block "$REX_BLOCK" --host codex --command codex --conversation 01234567-89ab-4cde-8fab-0123456789ab --model gpt-6-astra --effort high
+rexurrect receipt set --server "$rr_server" --state-dir "$rr_state" --block "$REX_BLOCK" --host codex --command codex --conversation 01234567-89ab-4cde-8fab-0123456789ab --model gpt-6-astra --effort high
 rexurrect receipt list --server "$rr_server" --state-dir "$rr_state" --json
-rexurrect receipt clear --server "$rr_server" --state-dir "$rr_state" --session "$REX_SESSION" --block "$REX_BLOCK"
+rexurrect receipt clear --server "$rr_server" --state-dir "$rr_state" --block "$REX_BLOCK"
 ```
+
+A Rex terminal names its pane in `REX_BLOCK`. Since Rex 0.1.0-preview.23 new
+terminals no longer set `REX_SESSION`, so `set` finds the session that holds
+the block itself: it lists the live sessions and takes the one whose blocks
+include that shell block, then verifies it under the lock as before. `clear`
+needs no Rex call for this; it matches the block in any session, because block
+IDs are unique. `--session` stays optional on both: given, `set` checks the
+block is in that session and `clear` matches only that session.
 
 `list` optionally filters by `--session` and/or `--block`. `clear` optionally
 takes `--conversation UUID` and `--command NAME` as guards; under the lock it

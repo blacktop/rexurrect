@@ -14,7 +14,7 @@ rr_command=${RR_HARNESS:-}
 # own hooks, so only a Codex hook can treat that marker as nesting.
 [ -z "${CODEX_THREAD_ID:-}" ] || exit 0
 [ "$rr_host" = claude ] || [ -z "${CLAUDECODE:-}" ] || exit 0
-[ -n "${REX_SESSION:-}" ] && [ -n "${REX_BLOCK:-}" ] || exit 0
+[ -n "${REX_BLOCK:-}" ] || exit 0
 rr_server=${REXURRECT_SERVER:?rexurrect-launch sets the Rex endpoint}
 rr_state=${REXURRECT_STATE_DIR:?rexurrect-launch sets the state directory}
 
@@ -28,7 +28,7 @@ rr_valid_model() {
 
 rr_receipt() {
 	rexurrect receipt "$@" --server "$rr_server" --state-dir "$rr_state" \
-		--session "$REX_SESSION" --block "$REX_BLOCK" --command "$rr_command" >/dev/null
+		--block "$REX_BLOCK" --command "$rr_command" >/dev/null
 }
 
 rr_event=$(

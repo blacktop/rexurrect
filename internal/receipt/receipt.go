@@ -94,6 +94,21 @@ func (k Key) Validate() error {
 	return nil
 }
 
+// ValidateClear checks a key given to clear. The session may be left out:
+// block IDs are unique, so the block alone names the receipt.
+func (k Key) ValidateClear() error {
+	if !ValidBlockID(k.BlockID) || k.SessionID != "" && !ValidSessionID(k.SessionID) {
+		return errors.New("receipt clear requires a full Rex block ID and, if given, a full session ID")
+	}
+	return nil
+}
+
+// Selects reports whether r is the receipt k names: same block, and same
+// session unless k leaves it out.
+func (k Key) Selects(r Receipt) bool {
+	return r.BlockID == k.BlockID && (k.SessionID == "" || r.SessionID == k.SessionID)
+}
+
 // Legacy reports whether r uses the pre-format-2 harness form.
 func (r Receipt) Legacy() bool { return r.Harness != "" }
 

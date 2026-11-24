@@ -7,8 +7,10 @@ matching receipt. After a Rex restart, rexurrect types that command's `resume`
 form into the restored pane.
 
 The plugin needs an installed `rexurrect` whose `receipt set` accepts `--host`
-and `--command` (receipt store format 2), plus `rex` and `jq` on the hook's
-PATH.
+and `--command` (receipt store format 2) and finds the session from `--block`
+alone, plus `rex` and `jq` on the hook's PATH. The hooks, the launcher and the
+omp extension identify the pane by `REX_BLOCK` only: terminals of Rex
+0.1.0-preview.23 and later no longer set `REX_SESSION`.
 Interactive Codex needs `--no-daemon`, present since Codex CLI 0.163.0. Install
 and configure rexurrect's automatic job separately. The plugin does not install
 the binary, edit account configuration, or start or restart Rex.
@@ -94,8 +96,8 @@ What the launcher does:
   the conversation. Any marker already present, even empty, means a launcher or
   agent session is above this one. Claude Code and Codex also identify their
   tool shells with `CLAUDECODE` and `CODEX_THREAD_ID`. Such
-  launches and launches outside a Rex pane run the agent directly with all
-  markers blank.
+  launches and launches outside a Rex pane (no `REX_BLOCK`) run the agent
+  directly with all markers blank.
 - Inside Rex, starts Codex with `--no-daemon`. The shared Codex app-server
   daemon outlives a pane, runs hooks with its own environment, and does not end
   a thread when the pane closes, so a daemon-attached session can never be

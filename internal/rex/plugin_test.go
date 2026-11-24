@@ -173,11 +173,18 @@ func TestPluginReceiptHooks(t *testing.T) {
 
 	r := commandReceipt(1, "codex", "codex")
 	r.Effort = ""
+	// The pane names only its block, so registration has to find the session
+	// holding it; the first listed session holds none.
 	c := scriptClient(t, `
 case "$6:$8" in
   whoami:*) printf '%s\n' '{"host_id":"host","instance_id":"instance","rex_version":"version"}' ;;
   api:server.version) printf '%s\n' '{"rex_version":"version","commit":"commit"}' ;;
-  api:session.list_blocks) printf '%s\n' '{"blocks":[{"block_id":"`+r.BlockID+`","flavor":"com.superlogical.terminal.shell"}]}' ;;
+  api:session.list) printf '%s\n' '{"sessions":[{"session_id":"session:01234567-89ab-4cde-8fab-00000000ffff"},{"session_id":"`+r.SessionID+`"}]}' ;;
+  api:session.list_blocks)
+    case "$9" in
+      *'"`+r.SessionID+`"'*) printf '%s\n' '{"blocks":[{"block_id":"`+r.BlockID+`","flavor":"com.superlogical.terminal.shell"}]}' ;;
+      *) printf '%s\n' '{"blocks":[]}' ;;
+    esac ;;
   *) exit 1 ;;
 esac
 `)
@@ -371,13 +378,13 @@ esac
 }
 
 // paneEnv is the environment a Rex pane gives the launcher and hooks: the
-// receipt key, the rexurrect endpoint and state directory, and a PATH that
+// pane's block (since Rex 0.1.0-preview.23 terminals no longer name their
+// session), the rexurrect endpoint and state directory, and a PATH that
 // resolves the fixture executables first.
 func paneEnv(home, bin, server, stateDir string) []string {
-	r := agentReceipt(1, "")
 	return []string{
 		"HOME=" + home, "PATH=" + bin + ":/usr/bin:/bin",
-		"REX_SESSION=" + r.SessionID, "REX_BLOCK=" + r.BlockID,
+		"REX_BLOCK=" + agentReceipt(1, "").BlockID,
 		"REXURRECT_SERVER=" + server, "REXURRECT_STATE_DIR=" + stateDir,
 	}
 }
@@ -483,7 +490,7 @@ func checkLaunch(t *testing.T, bin string, tc launchCase, path string, args ...s
 	r := agentReceipt(1, "")
 	want := strings.Join([]string{
 		"receipt", "clear", "--server", "unix:///private/tmp/rex-plugin-test-unused",
-		"--state-dir", filepath.Join(bin, "saved"), "--session", r.SessionID,
+		"--state-dir", filepath.Join(bin, "saved"),
 		"--block", r.BlockID, "--command", tc.command, "",
 	}, "\n")
 	if err != nil || string(data) != want {
@@ -547,7 +554,8 @@ func TestPluginShellHelpers(t *testing.T) {
 		{name: "custom-command", host: "codex", command: "codex-work", owner: "codex-work", effort: "high",
 			args: codexArgs, wantArgs: append([]string{"--no-daemon"}, codexArgs...)},
 		plainCodex("missing-block", codexArgs, "REX_BLOCK="),
-		plainCodex("missing-session", codexArgs, "REX_SESSION="),
+		// Terminals of older Rex servers also name their session; it is not used.
+		ownedCodex("session-variable-ignored", 0, 0, 0, "REX_SESSION="+agentReceipt(1, "").SessionID),
 		plainCodex("nested-claude", codexArgs, "CLAUDECODE=1"),
 		plainCodex("nested-codex", codexArgs, "CODEX_THREAD_ID=outer"),
 		plainCodex("preset-owner", codexArgs, "RR_HARNESS=codex"),

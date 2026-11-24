@@ -91,7 +91,7 @@ type ompWant struct {
 func (w ompWant) call() ompCall {
 	r := agentReceipt(1, "")
 	args := []string{"receipt", w.verb, "--server", ompServer, "--state-dir", ompState,
-		"--session", r.SessionID, "--block", r.BlockID, "--command", ompCommand, "--conversation", w.id}
+		"--block", r.BlockID, "--command", ompCommand, "--conversation", w.id}
 	if w.verb == "set" {
 		return ompCall{Args: append(args, "--lock-timeout", "30s", "--call-timeout", "5s", "--host", "omp"),
 			Timeout: 35000, Aborted: w.aborted}
@@ -162,6 +162,7 @@ func TestPluginOmpExtension(t *testing.T) {
 			exec: []ompExec{{Defer: true}}, steps: []ompStep{ompStart(ompIDA, true), turnEnd, shutdown}},
 		{name: "launcher pid of another process owns nothing", want: []ompWant{}, env: []string{"RR_LAUNCHER_PID=1"}, steps: lifecycle},
 		{name: "missing launcher pid owns nothing", want: []ompWant{}, env: []string{"RR_LAUNCHER_PID="}, steps: lifecycle},
+		{name: "outside a Rex pane owns nothing", want: []ompWant{}, env: []string{"REX_BLOCK="}, steps: lifecycle},
 		{name: "missing host owns nothing", want: []ompWant{}, env: []string{"RR_HOST="}, steps: lifecycle},
 		{name: "subagent owns nothing", want: []ompWant{}, steps: []ompStep{
 			ompEvent("session_start", map[string]any{"id": ompIDA, "agent": "sub"}), turnEnd, shutdown}},
