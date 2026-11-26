@@ -7,10 +7,20 @@ import (
 	"strings"
 )
 
+const resumeRules = `
+-- rexurrect resumes Claude Code and Codex from receipts that keep the account
+-- wrapper; Rex's own rules would start the plain command. Others stay on.
+if rex.set then
+  rex.set("resume.trust.claude", false)
+  rex.set("resume.trust.codex", false)
+end
+`
+
 // LuaHook renders the init.lua snippet that starts `agent wake` detached each
-// time Rex loads its configuration. Every argument is a Lua string literal;
-// no shell expands them. A timeout option is deliberately absent: Rex kills a
-// detached command when one expires, and wake bounds its own wait.
+// time Rex loads its configuration and turns off Rex's own Claude Code and
+// Codex resume rules. Every argument is a Lua string literal; no shell expands
+// them. A timeout option is deliberately absent: Rex kills a detached command
+// when one expires, and wake bounds its own wait.
 func LuaHook(executable, label, plistDir string) ([]byte, error) {
 	if !filepath.IsAbs(executable) {
 		return nil, errors.New("the rexurrect executable path must be absolute")
@@ -36,7 +46,7 @@ func LuaHook(executable, label, plistDir string) ([]byte, error) {
 		}
 		quoted = append(quoted, literal)
 	}
-	return fmt.Appendf(nil, "-- rexurrect: wake the recovery LaunchAgent as soon as this Rex server starts.\n-- Printed by `rexurrect hook lua`; harmless under `rex config check` and reload.\nif rex.exec and rex.exec.start then\n  rex.exec.start({%s}, {detach = true})\nend\n", strings.Join(quoted, ", ")), nil
+	return fmt.Appendf(nil, "-- rexurrect: wake the recovery LaunchAgent as soon as this Rex server starts.\n-- Printed by `rexurrect hook lua`; harmless under `rex config check` and reload.\nif rex.exec and rex.exec.start then\n  rex.exec.start({%s}, {detach = true})\nend\n%s", strings.Join(quoted, ", "), resumeRules), nil
 }
 
 func luaString(s string) (string, error) {

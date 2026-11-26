@@ -31,7 +31,8 @@ generations are retained.
 Rex preview.23 and later bring sessions back on their own, with the same IDs.
 rexurrect keeps every session Rex restored and creates only the ones Rex did
 not bring back, so nothing is duplicated. Panes Rex restores come back as plain
-shells. With the shell hook installed, fish runs a pane's resume command, and
+shells, unless Rex resumed a program there itself (see [Rex's init.lua](#rexs-initlua)).
+With the shell hook installed, fish runs a pane's resume command, and
 the report marks it failed if it exits nonzero right away; recorded commands,
 and every command in zsh, are typed and left for you to run. See
 [Sessions Rex restores itself](docs/compatibility.md#sessions-rex-restores-itself).
@@ -90,17 +91,24 @@ something comes back with that line typed at its prompt, ready for Enter and
 never run on its own. Agent panes still resume through their receipts. See
 [Foreground commands](docs/compatibility.md#foreground-commands-s5).
 
-## Waking the job when Rex starts
+## Rex's init.lua
 
-The job already responds when the Rex socket appears or disappears. To wake
-it from Rex's own startup as well, add the output of `rexurrect hook lua` to
-`~/.config/rex/init.lua`. When Rex loads that file it starts
-`rexurrect agent wake` detached; wake kicks the installed job only after
-confirming that the process which started it is the configured Rex server, so
-`rex config check` or running it from a shell does nothing. Reloading the
-configured server can wake a harmless same-instance cycle.
-A disabled or uninstalled job is left alone. Remove the lines to turn it off.
-See [Startup trigger](docs/compatibility.md#startup-trigger-initlua).
+Add the output of `rexurrect hook lua` to `~/.config/rex/init.lua`, then run
+`rex config reload`. The snippet does two things.
+
+It turns off Rex's own `claude` and `codex` resume rules, which would restart
+a wrapped agent as the plain command under the default account; rexurrect
+resumes both from receipts that keep the wrapper. Rex keeps its other rules.
+
+It also wakes the job from Rex's own startup, in addition to the socket watch.
+Rex starts `rexurrect agent wake` detached; wake kicks the installed job only
+after confirming that the process which started it is the configured Rex
+server, so `rex config check` or running it from a shell does nothing.
+Reloading the configured server can wake a harmless same-instance cycle.
+A disabled or uninstalled job is left alone.
+
+Remove the lines to turn both off. See
+[Startup trigger](docs/compatibility.md#startup-trigger-initlua).
 
 ## Usage
 

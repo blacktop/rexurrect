@@ -12,7 +12,8 @@ import (
 
 // runHook prints an embedded hook so a cask-installed binary needs no
 // checkout: the shell recorder for zsh or fish, or the init.lua snippet that
-// wakes the LaunchAgent when Rex starts.
+// wakes the LaunchAgent when Rex starts and turns off Rex's Claude Code and
+// Codex resume rules.
 func runHook(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: rexurrect hook <zsh|fish|lua> [options]")

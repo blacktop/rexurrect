@@ -248,7 +248,7 @@ func TestLuaHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "if rex.exec and rex.exec.start then\n  rex.exec.start({\"/opt/rexurrect\", \"agent\", \"wake\"}, {detach = true})\nend\n"
+	want := "if rex.exec and rex.exec.start then\n  rex.exec.start({\"/opt/rexurrect\", \"agent\", \"wake\"}, {detach = true})\nend\n" + resumeRules
 	if !strings.HasSuffix(string(plain), want) || strings.Contains(string(plain), "timeout") || !strings.HasPrefix(string(plain), "-- rexurrect:") {
 		t.Fatalf("default snippet:\n%s", plain)
 	}
@@ -280,8 +280,16 @@ func TestLuaHook(t *testing.T) {
 	out, err := exec.CommandContext(t.Context(), rex, "--autostart=false", "config", "check", config, "--json").CombinedOutput()
 	var report struct {
 		Diagnostics []json.RawMessage `json:"diagnostics"`
+		ResumeRules []struct {
+			Name string `json:"name"`
+		} `json:"resume_rules"`
 	}
 	if err != nil || json.Unmarshal(out, &report) != nil || len(report.Diagnostics) != 0 {
 		t.Fatalf("rex config check rejected the snippet: %v\n%s", err, out)
+	}
+	for _, rule := range report.ResumeRules {
+		if rule.Name == "claude" || rule.Name == "codex" {
+			t.Fatalf("resume rule %q is still in force:\n%s", rule.Name, out)
+		}
 	}
 }

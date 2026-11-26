@@ -1234,6 +1234,11 @@ format. Truncation affects logs only; snapshot and journal retention is unchange
 if rex.exec and rex.exec.start then
   rex.exec.start({"/opt/homebrew/bin/rexurrect", "agent", "wake"}, {detach = true})
 end
+
+if rex.set then
+  rex.set("resume.trust.claude", false)
+  rex.set("resume.trust.codex", false)
+end
 ```
 
 The executable path is the printing binary's own absolute path; `--label` and
@@ -1243,6 +1248,20 @@ is a Lua string literal and no shell expands it. The snippet carries no
 expires, and wake bounds its own wait. Nothing edits `init.lua`; the user adds
 and removes the lines. `rex config check` accepts the snippet, and reports a
 warning rather than an error if the executable is missing.
+
+The second block removes Rex's built-in `claude` and `codex` Program Resume
+rules. Those rules start the plain `claude --resume <uuid>` or
+`codex resume <uuid>` command in a fresh environment, while an agent started
+through an account wrapper reports the same plain command. On a restart with
+the rules in force, Rex started `claude` under the default account in every
+wrapped pane; Claude Code could not find the conversation there and exited,
+and rexurrect then delivered the wrapper command to the idle shell. Recovery
+depended on that exit, which Claude Code does not document. Without the
+rules, receipts are the only path for both agents; a pane with no receipt gets
+back at most the command the shell hook recorded, typed for Enter. Other built-in rules,
+such as `opencode`, stay in force. A Rex that does not know these settings
+warns and ignores them; `rex config check` lists the rules in force and the
+line that removed each of the others.
 
 `agent wake` is that detached command. It records its parent PID before doing
 anything else, reads the owned plist (absent plist: skip), then polls `whoami`
