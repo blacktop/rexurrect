@@ -75,14 +75,14 @@ updates `Casks/rexurrect.rb` on `blacktop/homebrew-tap`. Use
 push fails, the command leaves the signed local tag in place and prints the
 retry command.
 
-The workflow needs `HOMEBREW_TAP_TOKEN` in the `release` environment of
-`blacktop/rexurrect`. Use a fine-grained GitHub token limited to
-`blacktop/homebrew-tap`, with repository Contents permission set to read and
-write. Once the environment exists, add the token from your own terminal:
+The workflow passes the `TAP_GITHUB_TOKEN` repository secret of
+`blacktop/rexurrect` to GoReleaser as `HOMEBREW_TAP_TOKEN`. Use a fine-grained
+GitHub token limited to `blacktop/homebrew-tap`, with repository Contents
+permission set to read and write. Add the token from your own terminal:
 
 ```fish
-gh secret set HOMEBREW_TAP_TOKEN --repo blacktop/rexurrect --env release
-gh secret list --repo blacktop/rexurrect --env release
+gh secret set TAP_GITHUB_TOKEN --repo blacktop/rexurrect
+gh secret list --repo blacktop/rexurrect
 ```
 
 Paste the token at the hidden prompt; keep it out of command arguments and

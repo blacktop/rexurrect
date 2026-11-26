@@ -81,7 +81,7 @@ and install the per-user LaunchAgent. `just check` runs the formatting, vet, and
 private-server checks. `just release-check` runs `goreleaser check`.
 The release workflow pins GoReleaser v2.18.2 and publishes to
 `blacktop/homebrew-tap` on branch `master`, under `Casks`, using the
-`HOMEBREW_TAP_TOKEN` secret from the `release` GitHub environment.
+`TAP_GITHUB_TOKEN` repository secret.
 `just release vMAJOR.MINOR.PATCH` requires a clean `main` checkout matching
 `origin/main`, runs both checks with the native test gates enabled, creates a
 signed tag at the checked commit, and pushes only that tag. If the push fails,
